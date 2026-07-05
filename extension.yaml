@@ -1,0 +1,77 @@
+id: jcode.ext.gitscm
+name: Source Control
+version: 0.5.1
+type: scm
+publisher: jcode
+authors: [jcode, blamspotdev]
+description: Compact git source control in the left drawer — tree/list changes, multi-repo workspaces, commit, branch, sync, and GitHub sign-in.
+longDescription: >
+  A compact, VS Code-style git source-control sidebar in the left drawer, over the git
+  installed in the Linux runtime. Authored in TypeScript and built for production. Detects
+  the real repository root(s) — in a User Workspace it enumerates every project folder and
+  lets you switch between repositories. View working-tree changes as a flat list or a
+  folder tree; the Staged and Changes sections collapse. Stage / unstage / discard inline,
+  commit staged changes (with an inline identity form the first time), switch and create
+  branches, and fetch / pull / push with automatic upstream setup for new branches. Sign
+  in to GitHub with a Personal Access Token — stored via git's credential helper so
+  push/pull to GitHub HTTPS remotes just work — and set an origin remote from the panel.
+  Follows JCode's theme tokens so it matches the app. Offers to initialize a repository
+  when the open project isn't one yet.
+api:
+  minApiVersion: 1
+  capabilities: [exec, workbench, config]
+settings:
+  - key: scm.defaultView
+    label: Default changes view
+    type: enum
+    default: list
+    options: [list, tree]
+    description: Show working-tree changes as a flat list or a folder tree.
+  - key: scm.commitMsg.enabled
+    label: Generate commit message · enable
+    type: bool
+    default: false
+    description: Show a button in the commit box that drafts a message with an agent CLI. Off by default — turn on to opt in.
+  - key: scm.commitMsg.tool
+    label: Generate commit message · tool
+    type: enum
+    default: claude
+    options: [claude, opencode, custom]
+    description: Agent CLI the Generate button runs to draft a commit message from the diff. "custom" runs the command below.
+  - key: scm.commitMsg.model
+    label: Generate commit message · model
+    type: string
+    default: ""
+    description: Model id passed to the agent (blank = the tool's own default).
+  - key: scm.commitMsg.detail
+    label: Generate commit message · detail
+    type: enum
+    default: summary
+    options: [summary, detailed]
+    description: summary = one subject line; detailed = a subject plus a short bulleted body.
+  - key: scm.commitMsg.customCommand
+    label: Generate commit message · custom command
+    type: string
+    default: ""
+    description: Used when tool = custom. The diff is piped to this command's stdin; it must print the commit message to stdout.
+requires:
+  extensions: []
+suggests:
+  sdks: [git]
+
+# --- header fields merged from extension.jehm ---
+shortDescription: >-
+  Compact git source control in the left drawer — tree/list changes, multi-repo workspaces, commit, branch, sync, and
+  GitHub sign-in.
+minJCodeVersion: 1.0.0
+targetJCodeVersion: 1.0.0
+category: Source Control
+subcategory: Git
+images:
+  icon: media/icon.png
+  samples: []
+  walkthrough: []
+entry:
+  manifest: extension.yaml
+  ui: www/index.html
+  libs: []

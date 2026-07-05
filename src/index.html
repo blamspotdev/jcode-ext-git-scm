@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Source Control</title>
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="repoBar" class="repobar hide"></div>
+  <div class="hd">
+    <button class="branch" id="branchBtn" title="Switch branch">
+      <svg viewBox="0 0 16 16"><path fill="currentColor" d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6A2.5 2.5 0 0110 8.5H6a1 1 0 00-1 1v1.128a2.251 2.251 0 11-1.5 0V5.372a2.25 2.25 0 111.5 0v1.836A2.492 2.492 0 016 7h4a1 1 0 001-1v-.628A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z"></path></svg>
+      <span class="bn" id="branchName">…</span>
+    </button>
+    <span class="aheadbehind hide" id="ab"></span>
+    <button class="ic" id="fetch" title="Fetch">
+      <svg viewBox="0 0 16 16"><path fill="currentColor" d="M2.75 8a5.25 5.25 0 019.15-3.5H10a.75.75 0 000 1.5h3.25A.75.75 0 0014 5.25V2a.75.75 0 00-1.5 0v1.28A6.75 6.75 0 001.25 8a.75.75 0 001.5 0zm11.5 0a.75.75 0 00-1.5 0 5.25 5.25 0 01-9.15 3.5H6a.75.75 0 000-1.5H2.75a.75.75 0 00-.75.75V14a.75.75 0 001.5 0v-1.28A6.75 6.75 0 0014.25 8z"></path></svg>
+    </button>
+    <button class="ic" id="pull" title="Pull">
+      <svg viewBox="0 0 16 16"><path fill="currentColor" d="M7.47 10.78a.75.75 0 001.06 0l3.75-3.75a.75.75 0 00-1.06-1.06L8.75 8.44V1.75a.75.75 0 00-1.5 0v6.69L4.78 5.97a.75.75 0 00-1.06 1.06l3.75 3.75zM3.75 13a.75.75 0 000 1.5h8.5a.75.75 0 000-1.5h-8.5z"></path></svg>
+    </button>
+    <button class="ic" id="push" title="Push">
+      <svg viewBox="0 0 16 16"><path fill="currentColor" d="M8.53 1.22a.75.75 0 00-1.06 0L3.72 4.97a.75.75 0 101.06 1.06L7.25 3.56v6.69a.75.75 0 001.5 0V3.56l2.47 2.47a.75.75 0 101.06-1.06L8.53 1.22zM3.75 13a.75.75 0 000 1.5h8.5a.75.75 0 000-1.5h-8.5z"></path></svg>
+    </button>
+    <span class="sp"></span>
+    <button class="ic" id="viewToggle" title="View as tree / list"></button>
+    <button class="ic rel" id="ghBtn" title="GitHub">
+      <svg viewBox="0 0 16 16"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+      <span class="ghdot hide" id="ghDot"></span>
+    </button>
+    <button class="ic" id="refresh" title="Refresh">
+      <svg viewBox="0 0 16 16"><path fill="currentColor" d="M8 3a5 5 0 104.546 2.914.75.75 0 011.364-.626A6.5 6.5 0 118 1.5V.31c0-.28.32-.44.55-.28l2.3 1.65c.18.13.18.4 0 .53l-2.3 1.65a.35.35 0 01-.55-.28V3z"></path></svg>
+    </button>
+  </div>
+
+  <div id="notice" class="notice hide"></div>
+
+  <div id="main" class="hide">
+    <div class="commit">
+      <div class="msgbox">
+        <textarea id="msg" placeholder="Message — commits staged changes"></textarea>
+        <button id="genMsg" class="gen hide" title="Generate a commit message with an agent">
+          <svg viewBox="0 0 16 16"><path fill="currentColor" d="M8.5 1.4 7.4 4.3 4.5 5.4l2.9 1.1 1.1 2.9 1.1-2.9 2.9-1.1-2.9-1.1L8.5 1.4zM3.6 8.7 3 10.3l-1.6.6 1.6.6.6 1.6.6-1.6 1.6-.6-1.6-.6-.6-1.6zm7.4 1.6-.5 1.4-1.4.5 1.4.5.5 1.4.5-1.4 1.4-.5-1.4-.5-.5-1.4z"/></svg>
+        </button>
+      </div>
+      <div class="commit-row">
+        <div class="split">
+          <button id="commit" class="btn primary" title="Commit staged changes">Commit</button>
+          <button id="commitMore" class="btn primary caret" title="More commit actions" aria-label="More commit actions">
+            <svg viewBox="0 0 16 16"><path fill="currentColor" d="M4 6l4 4 4-4z"></path></svg>
+          </button>
+        </div>
+      </div>
+      <div id="identity" class="identity hide">
+        <div class="lbl">Git needs an identity for commits.</div>
+        <div class="f"><input id="idName" placeholder="Your name"></div>
+        <div class="f"><input id="idEmail" placeholder="you@example.com"></div>
+        <button id="saveId" class="btn ghost sm">Save identity</button>
+      </div>
+    </div>
+
+    <div class="sec" id="stagedSec">
+      <div class="sec-hd" data-sec="stagedSec">
+        <span class="chev">▾</span><span class="ttl">Staged</span><span class="badge" id="stagedCount">0</span>
+        <span class="sp"></span><button class="act hide" id="unstageAll">Unstage all</button>
+      </div>
+      <div class="list" id="stagedList"></div>
+    </div>
+
+    <div class="sec" id="changeSec">
+      <div class="sec-hd" data-sec="changeSec">
+        <span class="chev">▾</span><span class="ttl">Changes</span><span class="badge" id="changeCount">0</span>
+        <span class="sp"></span><button class="act hide" id="stageAll">Stage all</button><button class="act hide" id="discardAll">Discard all</button>
+      </div>
+      <div class="list" id="changeList"></div>
+    </div>
+
+  </div>
+
+  <!-- Pop-overs & scrim last in the DOM so they paint above the panel content. -->
+  <div id="scrim" class="scrim hide"></div>
+  <div id="branchMenu" class="pop hide"></div>
+  <div id="repoMenu" class="pop hide"></div>
+  <div id="commitMenu" class="pop hide"></div>
+
+  <script src="./main.js"></script>
+</body>
+</html>
