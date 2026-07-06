@@ -653,6 +653,16 @@ async function authSignIn() {
   const token = ($<HTMLInputElement>('ghTok').value || '').trim();
   if (!user || !token) { setMsg('ghMsg', 'Enter your username and token.', true); return; }
   $<HTMLButtonElement>('ghIn').disabled = true; setMsg('ghMsg', 'Saving…');
+  // Without git in the runtime the config/credential writes silently no-op — and because the command
+  // ends in a plain `printf` that still exits 0, sign-in would look like it "did nothing" (no banner,
+  // no error). Check up front and point the user at the install path. (A fresh environment set up with
+  // bootstrap skipped has no git until it's installed from Tools -> Toolchains.)
+  const hasGit = out(await exec('command -v git >/dev/null 2>&1 && echo yes')).trim() === 'yes';
+  if (!hasGit) {
+    $<HTMLButtonElement>('ghIn').disabled = false;
+    setMsg('ghMsg', "Git isn’t installed in this environment yet — install it from Tools → Toolchains (git), then sign in.", true);
+    return;
+  }
   const email = user + '@users.noreply.github.com';
   const cmd = 'git config --global credential.helper store; ' +
     'git config --global github.user ' + sh(user) + '; ' +
@@ -663,6 +673,10 @@ async function authSignIn() {
   const r = await exec(cmd, { env: { GH_USER: user, GH_TOKEN: token } });
   $<HTMLButtonElement>('ghIn').disabled = false;
   if (r.exitCode !== 0) { setMsg('ghMsg', out(r) || 'Failed to save credentials.', true); return; }
+  // The multi-statement command's exit code is the final printf's, so it can't detect a mid-command
+  // git failure — confirm the username actually landed before claiming success.
+  const saved = out(await exec('git config --global --get github.user 2>/dev/null')).trim();
+  if (saved !== user) { setMsg('ghMsg', 'Could not save credentials — is git working in this environment?', true); return; }
   await loadAuthState();
 }
 async function authSignOut() {
