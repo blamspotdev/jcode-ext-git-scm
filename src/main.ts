@@ -36,7 +36,7 @@ function api(type: string, payload?: unknown): Promise<ApiResult> {
   _onEvent(name: string, _json: string) {
     // Only the sidebar surface reloads config; the #github/#manage/#diff editor pages replaced
     // document.body and no longer have the sidebar DOM (#viewToggle, lists), so loadConfig would throw.
-    if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW.indexOf('diff:') !== 0) {
+    if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW !== 'clone' && VIEW !== 'remoteRepo' && VIEW.indexOf('diff:') !== 0) {
       void loadConfig().then(renderLists);
     }
   },
@@ -945,6 +945,130 @@ function renderDiffInto(el: HTMLElement, text: string, path: string) {
 function escapeHtml(s: string) { return s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string)); }
 function escapeAttr(s: string) { return s.replace(/"/g, '&quot;'); }
 
+// ---- Clone repo + Remote repo browser (opened in the editor via workbench.openView #clone / #remoteRepo) ----
+// Must match WorkspaceManager.sanitizedFolderName so the clone target lines up with what the app registers.
+function sanitizeName(s: string): string {
+  return (s || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'project';
+}
+
+async function renderClonePage() {
+  document.body.className = 'authpage';
+  document.body.innerHTML =
+    '<div class="page">' +
+    '<div class="page-hd">' + OCTOCAT + '<div><h1>Clone a repository</h1><div class="sub">Clone a Git repository into a new project</div></div></div>' +
+    '<div class="card">' +
+    '<div class="frow"><label>Repository URL</label><input id="clUrl" placeholder="https://github.com/owner/repo.git" autocapitalize="none" autocorrect="off" spellcheck="false"></div>' +
+    '<div class="frow"><label>Folder name</label><input id="clName" placeholder="(optional — taken from the URL)"></div>' +
+    '<div class="brow"><button id="clBtn" class="btn primary">Clone</button><span class="msg" id="clMsg"></span></div>' +
+    '<pre class="modal-log" id="clLog" style="display:none;margin-top:10px"></pre>' +
+    '</div></div>';
+  $('clBtn').onclick = () => void doClone();
+}
+
+async function doClone(url0?: string, name0?: string) {
+  const url = (url0 || (document.getElementById('clUrl') as HTMLInputElement | null)?.value || '').trim();
+  if (!url) { setMsg('clMsg', 'Enter a repository URL.', true); return; }
+  const raw = (name0 || (document.getElementById('clName') as HTMLInputElement | null)?.value || '').trim() ||
+    url.replace(/\/$/, '').replace(/\.git$/, '').split('/').pop() || 'repo';
+  const name = sanitizeName(raw);
+  const btn = document.getElementById('clBtn') as HTMLButtonElement | null;
+  if (btn) btn.disabled = true;
+  setMsg('clMsg', 'Cloning…');
+  const wd = '/workspace';
+  const target = '/workspace/' + name;
+  const tmp = '/root/.jcode-clone-' + name;
+  const exists = out(await exec('test -e ' + sh(target) + ' && echo yes', { workdir: wd })).trim();
+  if (exists === 'yes') { if (btn) btn.disabled = false; setMsg('clMsg', "A folder named '" + name + "' already exists.", true); return; }
+  // Clone onto ext4 (index-pack can't write a pack to the external-storage /workspace mount), then
+  // dereference proot --link2symlink pack symlinks (stat() gives EPERM but open()/cat still reads them)
+  // into regular files, and copy the symlink-free tree into /workspace.
+  const deref = 'find ' + sh(tmp) + ' -type l 2>/dev/null | while IFS= read -r l; do ' +
+    'if cat "$l" > "$l.deref" 2>/dev/null && [ -s "$l.deref" ]; then rm -f "$l"; mv "$l.deref" "$l"; ' +
+    'else rm -f "$l.deref" "$l"; fi; done';
+  const cmd = 'rm -rf ' + sh(tmp) + ' && ' + GITP + 'clone --progress ' + sh(url) + ' ' + sh(tmp) + ' && ' +
+    '{ find ' + sh(tmp) + " -name '.l2s.tmp_*' -delete 2>/dev/null; " + deref + '; ' +
+    'find ' + sh(tmp) + " -name '.l2s.*' -delete 2>/dev/null; find " + sh(tmp) + ' -xtype l -delete 2>/dev/null; ' +
+    'cp -r ' + sh(tmp) + ' ' + sh(target) + ' && rm -rf ' + sh(tmp) + '; }';
+  const r = await exec(cmd, { workdir: wd, timeoutMs: 600000 });
+  if (btn) btn.disabled = false;
+  const log = document.getElementById('clLog');
+  if (log) { log.style.display = 'block'; log.textContent = out(r); }
+  if (r.exitCode !== 0) {
+    setMsg('clMsg', 'Clone failed.', true);
+    await exec('rm -rf ' + sh(tmp) + ' ' + sh(target), { workdir: wd });
+    return;
+  }
+  setMsg('clMsg', 'Cloned — opening…');
+  await api('workbench.openFolder', { name });
+}
+
+let rrRepos: any[] = [];
+let rrUser = '';
+let rrOwner = '';
+
+async function renderRemotePage() {
+  document.body.className = 'authpage';
+  document.body.innerHTML =
+    '<div class="page">' +
+    '<div class="page-hd">' + OCTOCAT + '<div><h1>Remote repositories</h1><div class="sub">Clone one of your GitHub repositories</div></div></div>' +
+    '<div id="rrBody"><div class="muted">Loading…</div></div></div>';
+  await loadRemote();
+}
+
+async function loadRemote() {
+  const body = $('rrBody');
+  body.innerHTML = '<div class="muted">Loading…</div>';
+  rrUser = out(await exec('git config --global --get github.user 2>/dev/null')).trim();
+  const credLine = out(await exec('grep -m1 github.com ~/.git-credentials 2>/dev/null')).trim();
+  let token = '';
+  if (credLine.indexOf('https://') === 0) { token = credLine.slice(8).split('@')[0].split(':')[1] || ''; }
+  if (!rrUser || !token) {
+    body.innerHTML = '<div class="card"><h2>Sign in to GitHub</h2>' +
+      '<div class="muted">Sign in to browse and clone your repositories.</div>' +
+      '<div class="brow"><button id="rrSignin" class="btn primary">Sign in to GitHub</button></div></div>';
+    $('rrSignin').onclick = () => void api('workbench.openView', { view: 'github' });
+    return;
+  }
+  const cmd = 'curl -fsS -H "Authorization: token $GH_TOKEN" -H "User-Agent: JCode" -H "Accept: application/vnd.github+json" "https://api.github.com/user/repos?per_page=100&sort=updated"';
+  const r = await exec(cmd, { env: { GH_TOKEN: token }, timeoutMs: 30000 });
+  if (r.exitCode !== 0) {
+    const hasCurl = out(await exec('command -v curl >/dev/null 2>&1 && echo yes')).trim() === 'yes';
+    body.innerHTML = '<div class="card"><div class="msg err">' +
+      (hasCurl ? 'Failed to load repositories.' : 'curl isn’t installed in this environment — install it from Tools → Toolchains.') +
+      '</div><pre class="modal-log">' + escapeHtml(out(r)) + '</pre>' +
+      '<div class="brow"><button id="rrRetry" class="btn">Retry</button></div></div>';
+    $('rrRetry').onclick = () => void loadRemote();
+    return;
+  }
+  try { rrRepos = JSON.parse(r.stdout); } catch { body.innerHTML = '<div class="card"><div class="msg err">Could not parse the GitHub response.</div></div>'; return; }
+  if (!Array.isArray(rrRepos) || !rrRepos.length) { body.innerHTML = '<div class="card"><div class="muted">No repositories found for @' + escapeHtml(rrUser) + '.</div></div>'; return; }
+  const owners = Array.from(new Set(rrRepos.map((x) => x.owner && x.owner.login).filter(Boolean)))
+    .sort((a, b) => (a === rrUser ? -1 : b === rrUser ? 1 : String(a).localeCompare(String(b))));
+  if (owners.indexOf(rrOwner) < 0) rrOwner = owners[0] as string;
+  renderRemoteList(owners as string[]);
+}
+
+function renderRemoteList(owners: string[]) {
+  const body = $('rrBody');
+  const tabs = owners.map((o) => '<button class="rr-tab' + (o === rrOwner ? ' on' : '') + '" data-o="' + escapeAttr(o) + '">' +
+    escapeHtml(o === rrUser ? 'You' : o) + '</button>').join('');
+  const rows = rrRepos.filter((x) => x.owner && x.owner.login === rrOwner)
+    .sort((a, b) => String(a.name).toLowerCase().localeCompare(String(b.name).toLowerCase()))
+    .map((x) => '<div class="rr-repo" data-url="' + escapeAttr(x.clone_url || '') + '" data-name="' + escapeAttr(x.name || '') + '">' +
+      '<div class="rr-nm">' + escapeHtml(x.name || '') + (x.private ? '<span class="rr-priv">private</span>' : '') + '</div>' +
+      (x.description ? '<div class="muted rr-desc">' + escapeHtml(x.description) + '</div>' : '') + '</div>').join('');
+  body.innerHTML = '<div class="rr-tabs">' + tabs + '</div><div class="rr-list">' + (rows || '<div class="muted">No repositories.</div>') + '</div>';
+  body.querySelectorAll<HTMLElement>('.rr-tab').forEach((t) => { t.onclick = () => { rrOwner = t.dataset.o as string; renderRemoteList(owners); }; });
+  body.querySelectorAll<HTMLElement>('.rr-repo').forEach((el) => { el.onclick = () => void cloneRemoteRepo(el.dataset.url as string, el.dataset.name as string); });
+}
+
+async function cloneRemoteRepo(url: string, name: string) {
+  await renderClonePage();
+  const u = document.getElementById('clUrl') as HTMLInputElement | null; if (u) u.value = url;
+  const n = document.getElementById('clName') as HTMLInputElement | null; if (n) n.value = name;
+  void doClone(url, name);
+}
+
 // The extension renders two surfaces from one bundle: the SCM sidebar (drawer) and, when opened via
 // workbench.openView with #github, a full-page GitHub sign-in + git-identity screen in the editor.
 const VIEW = location.hash.replace(/^#/, '');
@@ -952,6 +1076,10 @@ if (VIEW === 'github') {
   void renderAuthPage();
 } else if (VIEW === 'manage') {
   void renderManagePage();
+} else if (VIEW === 'clone') {
+  void renderClonePage();
+} else if (VIEW === 'remoteRepo') {
+  void renderRemotePage();
 } else if (VIEW.indexOf('diff:') === 0) {
   void renderDiffPage();
 } else {
