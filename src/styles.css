@@ -222,3 +222,14 @@ body.authpage{padding:0;overflow-y:auto}
 .modal-log{background:color-mix(in srgb, var(--bg) 70%, #000 30%);border:1px solid var(--line);border-radius:7px;margin:0 0 12px;padding:8px;
   max-height:180px;overflow:auto;font-family:ui-monospace,monospace;font-size:12px;line-height:1.45;
   white-space:pre-wrap;word-break:break-word;color:var(--fg);-webkit-user-select:text;user-select:text}
+
+/* Remote-repo browser (#remoteRepo view) */
+.rr-tabs{display:flex;gap:6px;overflow-x:auto;padding:2px 0 10px;border-bottom:1px solid var(--line)}
+.rr-tab{flex:0 0 auto;height:28px;padding:0 12px;border-radius:7px;background:var(--panel2);color:var(--muted);border:1px solid var(--line);font-weight:600;font-size:12.5px;cursor:pointer}
+.rr-tab.on{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.rr-list{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.rr-repo{padding:10px 12px;border-radius:8px;background:var(--panel2);border:1px solid var(--line);cursor:pointer}
+.rr-repo:active{background:var(--line2)}
+.rr-nm{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px}
+.rr-priv{font-size:10.5px;font-weight:600;color:var(--muted);border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+.rr-desc{margin-top:2px;font-size:12px}

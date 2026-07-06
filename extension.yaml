@@ -1,6 +1,6 @@
 id: jcode.ext.gitscm
 name: Source Control
-version: 0.5.1
+version: 0.6.0
 type: scm
 publisher: jcode
 authors: [jcode, blamspotdev]
@@ -56,8 +56,19 @@ settings:
     description: Used when tool = custom. The diff is piped to this command's stdin; it must print the commit message to stdout.
 requires:
   extensions: []
-suggests:
   sdks: [git]
+suggests: {}
+contributes:
+  editorStartActions:
+    - id: clone
+      label: Clone
+    - id: remoteRepo
+      label: Remote Repo
+  drawerActions:
+    - id: clone
+      label: Clone Repo
+    - id: remoteRepo
+      label: Remote Repo
 
 # --- header fields merged from extension.jehm ---
 shortDescription: >-
