@@ -293,7 +293,23 @@ async function refreshStatus() {
   // -uall lists individual untracked files (respecting .gitignore) instead of collapsing whole
   // untracked directories, so the tree view and per-file staging work file-by-file.
   const r = await git('status --porcelain=v1 -b -uall');
-  const s = parseStatus(out(r));
+  // A failing status (e.g. a corrupt / unborn HEAD → "fatal: bad object HEAD") exits non-zero and
+  // writes to stderr. NEVER feed that into the porcelain parser — the error text would be read as
+  // fake file rows (each stderr char pair becomes a status code + path). Surface it and let the user
+  // retry instead. Also parse STDOUT only, so a stray git warning never lands in the file lists.
+  if (r.exitCode !== 0) {
+    setBranch('HEAD');
+    setRepoActions(false);
+    lastStaged = [];
+    lastUnstaged = [];
+    notice('Couldn’t read this repository.' +
+      '<div class="modal-log" style="margin-top:8px;max-height:120px">' +
+      escapeHtml(out(r).trim() || 'git status failed.') + '</div>' +
+      '<div style="margin-top:10px"><button id="scmRetry" class="btn primary">Refresh</button></div>');
+    const b = $<HTMLButtonElement>('scmRetry'); b.dataset.keep = '1'; b.onclick = () => void boot();
+    return;
+  }
+  const s = parseStatus(r.stdout);
   setBranch(s.branch || 'HEAD');
   const ab = $('ab');
   if (s.ahead || s.behind) { ab.classList.remove('hide'); ab.innerHTML = '↓<b>' + s.behind + '</b> ↑<b>' + s.ahead + '</b>'; }
