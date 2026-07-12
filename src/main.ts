@@ -36,7 +36,7 @@ function api(type: string, payload?: unknown): Promise<ApiResult> {
   _onEvent(name: string, _json: string) {
     // Only the sidebar surface reloads config; the #github/#manage/#diff editor pages replaced
     // document.body and no longer have the sidebar DOM (#viewToggle, lists), so loadConfig would throw.
-    if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW !== 'clone' && VIEW !== 'remoteRepo' && VIEW.indexOf('diff:') !== 0) {
+    if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW !== 'clone' && VIEW !== 'remoteRepo' && VIEW.indexOf('diff:') !== 0 && VIEW.indexOf('merge:') !== 0) {
       void loadConfig().then(renderLists);
     }
   },
@@ -55,6 +55,7 @@ let busy = false;
 let viewMode: ViewMode = 'list';
 let lastStaged: FileEntry[] = [];
 let lastUnstaged: FileEntry[] = [];
+let lastConflicts: FileEntry[] = [];
 const collapsedFolders = new Set<string>();
 
 async function exec(cmd: string, opts: { workdir?: string | null; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<ExecResult> {
@@ -133,6 +134,9 @@ const IC_FOLDER = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M1.75 3
 const IC_LIST = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M2 3.5h12V5H2zM2 7.25h12v1.5H2zM2 11h12v1.5H2z"/></svg>';
 const IC_TREE = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M2 2.75h1.5v10.5H2zM3.5 4h3v1.5h-3zM6 7.25h6v1.5H6zM6 10.5h6V12H6z"/></svg>';
 const IC_CHEV = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M6 4l4 4-4 4z"/></svg>';
+const IC_OURS = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M10.53 3.47a.75.75 0 010 1.06L7.06 8l3.47 3.47a.75.75 0 11-1.06 1.06l-4-4a.75.75 0 010-1.06l4-4a.75.75 0 011.06 0z"/></svg>';
+const IC_THEIRS = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M5.47 3.47a.75.75 0 011.06 0l4 4a.75.75 0 010 1.06l-4 4a.75.75 0 01-1.06-1.06L8.94 8 5.47 4.53a.75.75 0 010-1.06z"/></svg>';
+const IC_RESOLVED = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M13.78 4.22a.75.75 0 010 1.06l-6.5 6.5a.75.75 0 01-1.06 0l-3-3a.75.75 0 111.06-1.06L6.75 10.19l5.97-5.97a.75.75 0 011.06 0z"/></svg>';
 
 // ---- boot / repo detection ----
 async function boot() {
@@ -262,7 +266,7 @@ function toggleRepoMenu() {
 
 // ---- status ----
 function parseStatus(text: string) {
-  const s = { branch: '', ahead: 0, behind: 0, staged: [] as FileEntry[], unstaged: [] as FileEntry[] };
+  const s = { branch: '', ahead: 0, behind: 0, staged: [] as FileEntry[], unstaged: [] as FileEntry[], conflicts: [] as FileEntry[] };
   for (const line of text.split('\n')) {
     if (!line) continue;
     if (line.slice(0, 3) === '## ') {
@@ -282,6 +286,11 @@ function parseStatus(text: string) {
     const arrow = path.indexOf(' -> ');
     if (arrow >= 0) { const p = path.split(' -> '); path = p[1]; display = p[0] + ' → ' + p[1]; }
     if (x === '?' && y === '?') { s.unstaged.push({ code: '?', path, display, untracked: true }); continue; }
+    // Unmerged (merge/rebase conflict): DD AU UD UA DU AA UU. Surface these separately so they can be
+    // resolved, instead of double-listing the file under both Staged and Changes.
+    if (x === 'U' || y === 'U' || (x === 'D' && y === 'D') || (x === 'A' && y === 'A')) {
+      s.conflicts.push({ code: '!', path, display, untracked: false }); continue;
+    }
     if (x !== ' ' && x !== '?') s.staged.push({ code: x, path, display, untracked: false });
     if (y !== ' ' && y !== '?') s.unstaged.push({ code: y, path, display, untracked: false });
   }
@@ -300,10 +309,17 @@ async function refreshStatus() {
   else ab.classList.add('hide');
   lastStaged = s.staged;
   lastUnstaged = s.unstaged;
+  lastConflicts = s.conflicts;
   renderLists();
 }
 
 function renderLists() {
+  $('conflictSec').classList.toggle('hide', lastConflicts.length === 0);
+  renderSection('conflictList', 'conflictCount', [], lastConflicts, false, (f) => [
+    { icon: IC_OURS, title: 'Accept current (ours)', fn: () => resolveConflict(f.path, 'ours') },
+    { icon: IC_THEIRS, title: 'Accept incoming (theirs)', fn: () => resolveConflict(f.path, 'theirs') },
+    { icon: IC_RESOLVED, title: 'Mark resolved', fn: () => markResolved(f.path) },
+  ]);
   renderSection('stagedList', 'stagedCount', 'unstageAll', lastStaged, true, (f) => [{ icon: IC_UNSTAGE, title: 'Unstage', fn: () => unstage(f.path) }]);
   renderSection('changeList', 'changeCount', ['stageAll', 'discardAll'], lastUnstaged, false, (f) => [
     { icon: IC_DISCARD, title: 'Discard', fn: () => discard(f) },
@@ -871,6 +887,7 @@ const FILE_ICON = '<svg viewBox="0 0 16 16" width="24" height="24"><path fill="c
 // (index vs HEAD), w = working-tree (vs index), u = untracked (whole file as an addition), and repo is
 // the SCM panel's active repo root. The app derives a nice tab title from the passed `title`.
 function openDiff(f: FileEntry, staged: boolean) {
+  if (f.code === '!') { openMerge(f); return; } // conflicted file → the 3-way merge editor
   const mode = staged ? 's' : (f.untracked ? 'u' : 'w');
   // Carry the active repo into the hash — the diff opens as its own page and can't see this sidebar's
   // in-memory `repo`, so without this it would re-guess the repo (wrong in a multi-repo workspace).
@@ -950,6 +967,132 @@ function renderDiffInto(el: HTMLElement, text: string, path: string) {
     frag.appendChild(div);
   }
   el.appendChild(frag);
+}
+
+// ---- merge conflict resolution: the "Merge Changes" list actions + the 3-way merge editor page ----
+
+// Take one whole side of a conflicted file, then stage it. --ours = current branch (HEAD),
+// --theirs = the incoming branch being merged/rebased.
+async function resolveConflict(path: string, side: 'ours' | 'theirs') {
+  await run(() => git('checkout --' + side + ' -- ' + sh(path)), async (r) => {
+    if (r.exitCode === 0) await git('add -- ' + sh(path));
+    await refreshStatus();
+  });
+}
+// Stage a hand-edited conflicted file as resolved.
+async function markResolved(path: string) {
+  await run(() => git('add -- ' + sh(path)), async () => { await refreshStatus(); });
+}
+// Open the 3-way merge editor for a conflicted file (its own editor page, like the diff view).
+function openMerge(f: FileEntry) {
+  const r = repo ? encodeURIComponent(repo) : '';
+  void api('workbench.openView', { view: 'merge:' + r + ':' + encodeURIComponent(f.path), title: baseName(f.path) + ' — merge' });
+}
+
+interface MergeSeg { conflict: boolean; text: string[]; ours: string[]; theirs: string[] }
+// Split file contents (with git conflict markers) into plain + conflict segments. Handles the default
+// (<<< ours === theirs >>>) and diff3 (adds ||| base) marker styles.
+function parseConflicts(raw: string): MergeSeg[] {
+  const lines = raw.split('\n');
+  const segs: MergeSeg[] = [];
+  let buf: string[] = [];
+  for (let i = 0; i < lines.length;) {
+    if (lines[i].indexOf('<<<<<<<') === 0) {
+      if (buf.length) { segs.push({ conflict: false, text: buf, ours: [], theirs: [] }); buf = []; }
+      const ours: string[] = [], theirs: string[] = [];
+      i++;
+      while (i < lines.length && lines[i].indexOf('=======') !== 0 && lines[i].indexOf('|||||||') !== 0) ours.push(lines[i++]);
+      if (i < lines.length && lines[i].indexOf('|||||||') === 0) { i++; while (i < lines.length && lines[i].indexOf('=======') !== 0) i++; }
+      if (i < lines.length && lines[i].indexOf('=======') === 0) i++;
+      while (i < lines.length && lines[i].indexOf('>>>>>>>') !== 0) theirs.push(lines[i++]);
+      if (i < lines.length && lines[i].indexOf('>>>>>>>') === 0) i++;
+      segs.push({ conflict: true, text: [], ours, theirs });
+    } else buf.push(lines[i++]);
+  }
+  if (buf.length) segs.push({ conflict: false, text: buf, ours: [], theirs: [] });
+  return segs;
+}
+
+// The 3-way merge editor: shows each conflict's Current (ours) and Incoming (theirs) sides plus an
+// editable Result; on save it writes the reassembled file and stages it.
+async function renderMergePage() {
+  const m = VIEW.match(/^merge:([^:]*):([\s\S]*)$/);
+  let path = ''; try { path = decodeURIComponent(m ? m[2] : ''); } catch { path = m ? m[2] : ''; }
+  let mRepo = ''; try { mRepo = decodeURIComponent(m && m[1] ? m[1] : ''); } catch { mRepo = m ? m[1] : ''; }
+  repo = mRepo || localStorage.getItem('scm.activeRepo') || repo;
+  document.body.className = 'authpage';
+  document.body.innerHTML =
+    '<div class="page pagewide">' +
+    '<div class="page-hd">' + FILE_ICON +
+    '<div style="flex:1;min-width:0"><h1 class="mono difftitle">' + escapeHtml(path) + '</h1><div class="sub">Resolve conflicts</div></div>' +
+    '<button id="mSave" class="btn primary">Save &amp; resolve</button></div>' +
+    '<div id="mNote" class="notice hide"></div>' +
+    '<div id="mBody" class="mergewrap"><div class="dempty">Loading…</div></div>' +
+    '</div>';
+  if (!repo) { $('mBody').innerHTML = '<div class="dempty">No repository.</div>'; return; }
+  const rr = await exec('cat ' + sh(path), { workdir: repo });
+  const raw = rr.stdout || '';
+  const segs = parseConflicts(raw);
+  if (!segs.some((s) => s.conflict)) {
+    $('mBody').innerHTML = '<div class="dempty">No conflict markers found. If this file is already resolved, use “Mark resolved” in the Merge Changes list.</div>';
+    return;
+  }
+  const body = $('mBody'); body.innerHTML = '';
+  const results: (HTMLTextAreaElement | null)[] = [];
+  let ci = 0;
+  for (const seg of segs) {
+    if (!seg.conflict) {
+      const n = seg.text.length;
+      const onlyBlank = n === 1 && seg.text[0] === '';
+      if (n && !onlyBlank) {
+        const ctx = document.createElement('div'); ctx.className = 'mctx';
+        ctx.textContent = '⋯ ' + n + ' unchanged line' + (n === 1 ? '' : 's') + ' ⋯';
+        body.appendChild(ctx);
+      }
+      results.push(null);
+      continue;
+    }
+    const idx = ci++;
+    const oursText = seg.ours.join('\n'), theirsText = seg.theirs.join('\n');
+    const block = document.createElement('div'); block.className = 'mconf';
+    const hd = document.createElement('div'); hd.className = 'mconf-hd';
+    const t = document.createElement('span'); t.className = 'mconf-t'; t.textContent = 'Conflict ' + (idx + 1); hd.appendChild(t);
+    const ta = document.createElement('textarea'); ta.className = 'mresult mono'; ta.value = oursText;
+    ta.rows = Math.min(20, Math.max(2, seg.ours.length + seg.theirs.length));
+    const mk = (label: string, cls: string, val: string) => {
+      const b = document.createElement('button'); b.className = 'btn tiny ' + cls; b.textContent = label;
+      b.onclick = () => { ta.value = val; }; return b;
+    };
+    hd.appendChild(mk('Current', 'cur', oursText));
+    hd.appendChild(mk('Incoming', 'inc', theirsText));
+    hd.appendChild(mk('Both', '', oursText + (oursText && theirsText ? '\n' : '') + theirsText));
+    block.appendChild(hd);
+    const sides = document.createElement('div'); sides.className = 'msides';
+    const oc = document.createElement('div'); oc.className = 'mside cur';
+    oc.innerHTML = '<div class="mside-t">Current (ours)</div><pre class="mono">' + escapeHtml(oursText) + '</pre>';
+    const tc = document.createElement('div'); tc.className = 'mside inc';
+    tc.innerHTML = '<div class="mside-t">Incoming (theirs)</div><pre class="mono">' + escapeHtml(theirsText) + '</pre>';
+    sides.appendChild(oc); sides.appendChild(tc); block.appendChild(sides);
+    const rt = document.createElement('div'); rt.className = 'mside-t'; rt.textContent = 'Result (editable)'; block.appendChild(rt);
+    block.appendChild(ta);
+    body.appendChild(block);
+    results.push(ta);
+  }
+  ($('mSave') as HTMLButtonElement).onclick = async () => {
+    const parts: string[] = [];
+    for (let k = 0; k < segs.length; k++) {
+      const seg = segs[k];
+      parts.push(seg.conflict ? (results[k] ? results[k]!.value : '') : seg.text.join('\n'));
+    }
+    const merged = parts.join('\n');
+    const b64 = btoa(unescape(encodeURIComponent(merged)));
+    await run(() => exec('printf %s ' + sh(b64) + ' | base64 -d > ' + sh(path), { workdir: repo! }), async (r) => {
+      const note = $('mNote'); note.classList.remove('hide');
+      if (r.exitCode !== 0) { note.textContent = out(r) || 'Could not write the file.'; return; }
+      await git('add -- ' + sh(path));
+      note.innerHTML = '<b>Resolved and staged.</b> Close this tab and commit from Source Control.';
+    });
+  };
 }
 
 // ---- misc ----
@@ -1091,6 +1234,8 @@ if (VIEW === 'github') {
   void renderClonePage();
 } else if (VIEW === 'remoteRepo') {
   void renderRemotePage();
+} else if (VIEW.indexOf('merge:') === 0) {
+  void renderMergePage();
 } else if (VIEW.indexOf('diff:') === 0) {
   void renderDiffPage();
 } else {
