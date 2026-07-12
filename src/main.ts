@@ -867,11 +867,15 @@ async function renderCommits() {
 // ---- diff view (tap a changed file → its diff opens as a full editor page via workbench.openView) ----
 const FILE_ICON = '<svg viewBox="0 0 16 16" width="24" height="24"><path fill="currentColor" d="M3 1.75C3 .78 3.78 0 4.75 0h4.69c.46 0 .9.18 1.23.51l2.82 2.82c.33.33.51.77.51 1.23v9.69c0 .97-.78 1.75-1.75 1.75H4.75A1.75 1.75 0 013 14.25V1.75zm6.5.81V4.5c0 .14.11.25.25.25h1.94L9.5 2.56z"/></svg>';
 
-// Encode which diff to show in the view hash: s = staged (index vs HEAD), w = working-tree (vs index),
-// u = untracked (whole file as an addition). The app derives a nice tab title from the passed `title`.
+// Encode which diff to show in the view hash — diff:<mode>:<repo>:<path> — where mode is s = staged
+// (index vs HEAD), w = working-tree (vs index), u = untracked (whole file as an addition), and repo is
+// the SCM panel's active repo root. The app derives a nice tab title from the passed `title`.
 function openDiff(f: FileEntry, staged: boolean) {
   const mode = staged ? 's' : (f.untracked ? 'u' : 'w');
-  void api('workbench.openView', { view: 'diff:' + mode + ':' + f.path, title: baseName(f.path) + ' — diff' });
+  // Carry the active repo into the hash — the diff opens as its own page and can't see this sidebar's
+  // in-memory `repo`, so without this it would re-guess the repo (wrong in a multi-repo workspace).
+  const r = repo ? encodeURIComponent(repo) : '';
+  void api('workbench.openView', { view: 'diff:' + mode + ':' + r + ':' + encodeURIComponent(f.path), title: baseName(f.path) + ' — diff' });
 }
 
 // Open the real working-tree file in the editor at [line]. `repo` is the guest repo root, so
@@ -882,17 +886,24 @@ function openFileAt(path: string, line: number) {
 }
 
 async function renderDiffPage() {
-  const info = await api('workbench.projectInfo');
-  projectPath = info.ok && info.data && info.data.path ? info.data.path : null;
-  const m = VIEW.match(/^diff:([swu]):([\s\S]*)$/);
-  const mode = m ? m[1] : 'w';
-  let path = m ? m[2] : '';
+  // diff:<mode>:<repo>:<path> (current) or diff:<mode>:<path> (legacy tabs). Prefer the repo carried in
+  // the hash, then the remembered active repo, and only fall back to deriving it from the selected project.
+  const m3 = VIEW.match(/^diff:([swu]):([^:]*):([\s\S]*)$/);
+  const m2 = m3 ? null : VIEW.match(/^diff:([swu]):([\s\S]*)$/);
+  const mode = m3 ? m3[1] : (m2 ? m2[1] : 'w');
+  let path = m3 ? m3[3] : (m2 ? m2[2] : '');
   try { path = decodeURIComponent(path); } catch { /* the hash was already decoded */ }
-  repo = null;
-  if (projectPath) {
-    const top = await rawGit(projectPath, 'rev-parse --show-toplevel 2>/dev/null');
-    const root = out(top).split('\n').filter(Boolean).pop() || '';
-    if (top.exitCode === 0 && root) repo = root;
+  let hashRepo = '';
+  if (m3 && m3[2]) { try { hashRepo = decodeURIComponent(m3[2]); } catch { hashRepo = m3[2]; } }
+  repo = hashRepo || localStorage.getItem('scm.activeRepo') || null;
+  if (!repo) {
+    const info = await api('workbench.projectInfo');
+    projectPath = info.ok && info.data && info.data.path ? info.data.path : null;
+    if (projectPath) {
+      const top = await rawGit(projectPath, 'rev-parse --show-toplevel 2>/dev/null');
+      const root = out(top).split('\n').filter(Boolean).pop() || '';
+      if (top.exitCode === 0 && root) repo = root;
+    }
   }
   const sub = mode === 's' ? 'Staged changes' : mode === 'u' ? 'New file' : 'Working-tree changes';
   document.body.className = 'authpage';
