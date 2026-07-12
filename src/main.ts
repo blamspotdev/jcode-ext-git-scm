@@ -190,9 +190,21 @@ async function detectRepos(): Promise<RepoInfo[]> {
   for (const f of folders) {
     const top = await rawGit(f.path, 'rev-parse --show-toplevel 2>/dev/null');
     const root = out(top).split('\n').filter(Boolean).pop() || '';
-    if (top.exitCode === 0 && root && !seen.has(root)) { seen.add(root); found.push({ root, name: baseName(root) }); }
+    if (top.exitCode === 0 && root && !seen.has(root)) { seen.add(root); found.push({ root, name: baseName(root) }); void injectIgnored(root); }
   }
   return found;
+}
+
+// Read a repo's root .gitignore and inject its patterns as the Explorer's "by-injected" root hide
+// list (the app merges them per the user's hide mode). Blank lines, comments and negations skipped.
+// Runs on every boot() — i.e. on project switch while the SCM panel is visible.
+async function injectIgnored(root: string) {
+  const r = await exec('cat .gitignore 2>/dev/null', { workdir: root });
+  const patterns = (r.stdout || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && l[0] !== '#' && l[0] !== '!');
+  void api('workbench.setHiddenInjected', { path: root, patterns });
 }
 
 async function doInit() { setBusy(true); const r = await git('init', 30000); if (out(r)) logShow(out(r)); setBusy(false); void boot(); }
