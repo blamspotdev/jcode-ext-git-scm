@@ -33,11 +33,24 @@ function api(type: string, payload?: unknown): Promise<ApiResult> {
     try { r = JSON.parse(jsonString); } catch { r = { ok: false, error: jsonString }; }
     cb(r);
   },
-  _onEvent(name: string, _json: string) {
+  _onEvent(name: string, json: string) {
     // Only the sidebar surface reloads config; the #github/#manage/#diff editor pages replaced
     // document.body and no longer have the sidebar DOM (#viewToggle, lists), so loadConfig would throw.
-    if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW !== 'clone' && VIEW !== 'remoteRepo' && VIEW.indexOf('diff:') !== 0) {
+    if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW !== 'clone' && VIEW !== 'remoteRepo' && VIEW.indexOf('diff:') !== 0 && VIEW.indexOf('merge:') !== 0) {
       void loadConfig().then(renderLists);
+    }
+    // The sidebar surface (also booted headless by the app as the decorations host) reacts to disk
+    // changes and explorer context-menu taps; other surfaces are pages without repo state.
+    if (VIEW !== '') return;
+    if (name === 'filesChanged') scheduleDecorationRefresh();
+    if (name === 'explorerAction') {
+      let d: any = {};
+      try { d = JSON.parse(json); } catch { /* malformed event */ }
+      if (d && d.actionId === 'addToGitignore' && typeof d.path === 'string') {
+        // Queue behind boot so a tap in the first seconds isn't rejected with "not a repository"
+        // just because repo detection hasn't finished yet.
+        void bootP.then(() => addToGitignore(d.path, !!d.isDirectory));
+      }
     }
   },
 };
@@ -51,10 +64,13 @@ const baseName = (p: string) => { const i = p.replace(/\/$/, '').lastIndexOf('/'
 let projectPath: string | null = null;
 let repos: RepoInfo[] = [];
 let repo: string | null = null;
+// Latest boot()'s completion — explorer actions await it so early taps see detected repos.
+let bootP: Promise<void> = Promise.resolve();
 let busy = false;
 let viewMode: ViewMode = 'list';
 let lastStaged: FileEntry[] = [];
 let lastUnstaged: FileEntry[] = [];
+let lastConflicts: FileEntry[] = [];
 const collapsedFolders = new Set<string>();
 
 async function exec(cmd: string, opts: { workdir?: string | null; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<ExecResult> {
@@ -133,6 +149,9 @@ const IC_FOLDER = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M1.75 3
 const IC_LIST = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M2 3.5h12V5H2zM2 7.25h12v1.5H2zM2 11h12v1.5H2z"/></svg>';
 const IC_TREE = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M2 2.75h1.5v10.5H2zM3.5 4h3v1.5h-3zM6 7.25h6v1.5H6zM6 10.5h6V12H6z"/></svg>';
 const IC_CHEV = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M6 4l4 4-4 4z"/></svg>';
+const IC_OURS = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M10.53 3.47a.75.75 0 010 1.06L7.06 8l3.47 3.47a.75.75 0 11-1.06 1.06l-4-4a.75.75 0 010-1.06l4-4a.75.75 0 011.06 0z"/></svg>';
+const IC_THEIRS = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M5.47 3.47a.75.75 0 011.06 0l4 4a.75.75 0 010 1.06l-4 4a.75.75 0 01-1.06-1.06L8.94 8 5.47 4.53a.75.75 0 010-1.06z"/></svg>';
+const IC_RESOLVED = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M13.78 4.22a.75.75 0 010 1.06l-6.5 6.5a.75.75 0 01-1.06 0l-3-3a.75.75 0 111.06-1.06L6.75 10.19l5.97-5.97a.75.75 0 011.06 0z"/></svg>';
 
 // ---- boot / repo detection ----
 async function boot() {
@@ -168,6 +187,12 @@ async function boot() {
   showMain();
   refreshCommitState();
   await refreshAll();
+  // An explorer context-menu tap stashed while this surface was still booting — handle it now.
+  const pend = await api('workbench.pendingContextAction');
+  const act = pend.ok && pend.data ? pend.data.action : null;
+  if (act && act.actionId === 'addToGitignore' && typeof act.path === 'string') {
+    void addToGitignore(act.path, !!act.isDirectory);
+  }
 }
 
 // Detect every git repo in the workspace: try workbench.workspaceFolders (multi-repo workspaces),
@@ -186,12 +211,127 @@ async function detectRepos(): Promise<RepoInfo[]> {
   for (const f of folders) {
     const top = await rawGit(f.path, 'rev-parse --show-toplevel 2>/dev/null');
     const root = out(top).split('\n').filter(Boolean).pop() || '';
-    if (top.exitCode === 0 && root && !seen.has(root)) { seen.add(root); found.push({ root, name: baseName(root) }); }
+    if (top.exitCode === 0 && root && !seen.has(root)) {
+      seen.add(root);
+      found.push({ root, name: baseName(root) });
+      void injectIgnored(root);
+      void pushExplorerDecorations(root);
+    }
   }
   return found;
 }
 
-async function doInit() { setBusy(true); const r = await git('init', 30000); if (out(r)) logShow(out(r)); setBusy(false); void boot(); }
+// Read a repo's root .gitignore and inject its patterns as the Explorer's "by-injected" root hide
+// list (the app merges them per the user's hide mode). Blank lines, comments and negations skipped.
+// Runs on every boot() — i.e. on project switch while the SCM panel is visible.
+async function injectIgnored(root: string) {
+  const r = await exec('cat .gitignore 2>/dev/null', { workdir: root });
+  const patterns = (r.stdout || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && l[0] !== '#' && l[0] !== '!');
+  void api('workbench.setHiddenInjected', { path: root, patterns });
+}
+
+// ---- explorer decorations (per-file VCS badges + submodule dirs in the app's file tree) ----
+
+// One status letter per path for the explorer badge: staged letter first ("AM" reads as a new file),
+// worktree/untracked letters fill the gaps, conflicts override everything as 'U'. Conflicts sort
+// first so an oversized push truncated by the app never drops them.
+function decorationsFrom(s: ReturnType<typeof parseStatus>): { path: string; status: string }[] {
+  const m = new Map<string, string>();
+  for (const f of s.staged) if (!m.has(f.path)) m.set(f.path, f.code);
+  for (const f of s.unstaged) if (!m.has(f.path)) m.set(f.path, f.untracked ? '?' : f.code);
+  for (const f of s.conflicts) m.set(f.path, 'U');
+  const all = Array.from(m.entries(), ([path, status]) => ({ path, status }));
+  return all.filter((d) => d.status === 'U').concat(all.filter((d) => d.status !== 'U'));
+}
+
+// Push one repo's working-tree status + submodule roots into the app's Explorer. Reading .gitmodules
+// via `git config -f` lists submodules even before `git submodule init`; missing file → empty list.
+// [parsed] skips the status run when the caller (refreshStatus) already has one.
+async function pushExplorerDecorations(root: string, parsed?: ReturnType<typeof parseStatus>) {
+  let s = parsed;
+  if (!s) {
+    const st = await rawGit(root, 'status --porcelain=v1 -uall');
+    if (st.exitCode !== 0) return;
+    s = parseStatus(st.stdout || '');
+  }
+  const decorations = decorationsFrom(s).slice(0, 4000);
+  const sm = await rawGit(root, "config -f .gitmodules --get-regexp '^submodule\\..*\\.path$' 2>/dev/null");
+  // Lines are "submodule.<name>.path <value>" — split at the LAST '.path ' so submodule names
+  // containing spaces (or dots) don't truncate the value.
+  const submodules = (sm.exitCode === 0 ? sm.stdout || '' : '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => { const i = l.lastIndexOf('.path '); return i < 0 ? '' : l.slice(i + 6).trim(); })
+    .filter(Boolean);
+  void api('workbench.setExplorerDecorations', { path: root, decorations, submodules });
+}
+
+// Disk-change hints (saves, explorer file ops) arrive in bursts — recompute once, shortly after the
+// last one, for every known repo, and keep the visible sidebar lists in sync for the active one.
+let decoTimer: number | undefined;
+function scheduleDecorationRefresh() {
+  clearTimeout(decoTimer);
+  decoTimer = window.setTimeout(() => {
+    void (async () => {
+      // The FIRST repo may have appeared since boot (git init / clone in the terminal) — re-boot,
+      // which re-detects repos and re-renders the sidebar out of its "no repo" notice.
+      if (!repos.length) {
+        if (!busy) bootP = boot();
+        return;
+      }
+      // Re-detect rather than iterate the cached list: another workspace folder may have become a
+      // repo since boot (detectRepos pushes decorations + ignore patterns for every repo it finds),
+      // and a deleted repo's stale badges must be cleared.
+      const prevRoots = repos.map((r) => r.root);
+      repos = await detectRepos();
+      for (const gone of prevRoots.filter((p) => !repos.some((r) => r.root === p))) {
+        void api('workbench.setExplorerDecorations', { path: gone, decorations: [], submodules: [] });
+      }
+      if (repos.length && !repos.some((r) => r.root === repo)) repo = repos[0].root;
+      if (repo && !busy) void refreshStatus();
+    })();
+  }, 400);
+}
+
+// "Add to .gitignore" from the explorer's file/folder context menu: append a root-anchored pattern
+// to the containing repo's .gitignore (unless an equivalent line already exists), then re-sync the
+// injected hide list, the decorations, and the sidebar.
+async function addToGitignore(guestPath: string, isDirectory: boolean) {
+  // Longest matching root wins, so a file inside a nested repo/submodule lands in ITS .gitignore.
+  const target = repos
+    .filter((r) => guestPath === r.root || guestPath.indexOf(r.root + '/') === 0)
+    .sort((a, b) => b.root.length - a.root.length)[0]?.root;
+  if (!target) { void api('workbench.notify', { message: 'Not inside a git repository.' }); return; }
+  if (guestPath === target) { void api('workbench.notify', { message: 'Cannot ignore the repository root.' }); return; }
+  const rel = guestPath.slice(target.length + 1);
+  if (/[\n\r]/.test(rel)) { void api('workbench.notify', { message: 'Unsupported file name for .gitignore.' }); return; }
+  // Escape gitignore glob metacharacters so "foo[1].txt" ignores that file, not "foo1.txt".
+  const relEsc = rel.replace(/([[\]*?\\])/g, '\\$1');
+  const pattern = '/' + relEsc + (isDirectory ? '/' : '');
+  const cur = await exec('cat .gitignore 2>/dev/null', { workdir: target });
+  const lines = (cur.stdout || '').split('\n').map((l) => l.trim());
+  const variants = isDirectory ? [pattern, '/' + relEsc, relEsc, relEsc + '/'] : [pattern, '/' + relEsc, relEsc];
+  if (variants.some((v) => lines.indexOf(v) >= 0)) {
+    void api('workbench.notify', { message: "'" + rel + "' is already in .gitignore." });
+    return;
+  }
+  const r = await exec(
+    '{ [ -s .gitignore ] && [ "$(tail -c 1 .gitignore)" != "" ] && echo; } >> .gitignore 2>/dev/null; ' +
+      "printf '%s\\n' " + sh(pattern) + ' >> .gitignore',
+    { workdir: target },
+  );
+  if (r.exitCode !== 0) { logShow(out(r) || 'Failed to update .gitignore'); return; }
+  void api('workbench.notify', { message: "Added '" + rel + "' to .gitignore." });
+  void injectIgnored(target);
+  void pushExplorerDecorations(target);
+  if (repo === target && !busy) void refreshStatus();
+}
+
+async function doInit() { setBusy(true); const r = await git('init', 30000); if (out(r)) logShow(out(r)); setBusy(false); bootP = boot(); }
 async function refreshAll() { await Promise.all([refreshStatus(), refreshBranches(), refreshGh()]); }
 
 // ---- config (Phase: generic extension settings; graceful fallback to localStorage) ----
@@ -261,8 +401,15 @@ function toggleRepoMenu() {
 }
 
 // ---- status ----
+// Even with core.quotePath=false, git C-quotes paths containing double quotes, backslashes, or
+// control characters. JSON.parse covers the common escapes; octal falls back to bare unquoting.
+function unquoteGitPath(p: string): string {
+  if (p.length < 2 || p[0] !== '"' || p[p.length - 1] !== '"') return p;
+  try { return JSON.parse(p) as string; } catch { return p.slice(1, -1); }
+}
+
 function parseStatus(text: string) {
-  const s = { branch: '', ahead: 0, behind: 0, staged: [] as FileEntry[], unstaged: [] as FileEntry[] };
+  const s = { branch: '', ahead: 0, behind: 0, staged: [] as FileEntry[], unstaged: [] as FileEntry[], conflicts: [] as FileEntry[] };
   for (const line of text.split('\n')) {
     if (!line) continue;
     if (line.slice(0, 3) === '## ') {
@@ -280,8 +427,20 @@ function parseStatus(text: string) {
     const x = line[0], y = line[1];
     let path = line.slice(3), display = path;
     const arrow = path.indexOf(' -> ');
-    if (arrow >= 0) { const p = path.split(' -> '); path = p[1]; display = p[0] + ' → ' + p[1]; }
+    if (arrow >= 0) {
+      const p = path.split(' -> ').map(unquoteGitPath);
+      path = p[1];
+      display = p[0] + ' → ' + p[1];
+    } else {
+      path = unquoteGitPath(path);
+      display = path;
+    }
     if (x === '?' && y === '?') { s.unstaged.push({ code: '?', path, display, untracked: true }); continue; }
+    // Unmerged (merge/rebase conflict): DD AU UD UA DU AA UU. Surface these separately so they can be
+    // resolved, instead of double-listing the file under both Staged and Changes.
+    if (x === 'U' || y === 'U' || (x === 'D' && y === 'D') || (x === 'A' && y === 'A')) {
+      s.conflicts.push({ code: '!', path, display, untracked: false }); continue;
+    }
     if (x !== ' ' && x !== '?') s.staged.push({ code: x, path, display, untracked: false });
     if (y !== ' ' && y !== '?') s.unstaged.push({ code: y, path, display, untracked: false });
   }
@@ -316,10 +475,19 @@ async function refreshStatus() {
   else ab.classList.add('hide');
   lastStaged = s.staged;
   lastUnstaged = s.unstaged;
+  lastConflicts = s.conflicts;
   renderLists();
+  // Keep the explorer's badges in step with every sidebar-driven git mutation (stage/commit/etc.).
+  if (repo) void pushExplorerDecorations(repo, s);
 }
 
 function renderLists() {
+  $('conflictSec').classList.toggle('hide', lastConflicts.length === 0);
+  renderSection('conflictList', 'conflictCount', [], lastConflicts, false, (f) => [
+    { icon: IC_OURS, title: 'Accept current (ours)', fn: () => resolveConflict(f.path, 'ours') },
+    { icon: IC_THEIRS, title: 'Accept incoming (theirs)', fn: () => resolveConflict(f.path, 'theirs') },
+    { icon: IC_RESOLVED, title: 'Mark resolved', fn: () => markResolved(f.path) },
+  ]);
   renderSection('stagedList', 'stagedCount', 'unstageAll', lastStaged, true, (f) => [{ icon: IC_UNSTAGE, title: 'Unstage', fn: () => unstage(f.path) }]);
   renderSection('changeList', 'changeCount', ['stageAll', 'discardAll'], lastUnstaged, false, (f) => [
     { icon: IC_DISCARD, title: 'Discard', fn: () => discard(f) },
@@ -883,11 +1051,16 @@ async function renderCommits() {
 // ---- diff view (tap a changed file → its diff opens as a full editor page via workbench.openView) ----
 const FILE_ICON = '<svg viewBox="0 0 16 16" width="24" height="24"><path fill="currentColor" d="M3 1.75C3 .78 3.78 0 4.75 0h4.69c.46 0 .9.18 1.23.51l2.82 2.82c.33.33.51.77.51 1.23v9.69c0 .97-.78 1.75-1.75 1.75H4.75A1.75 1.75 0 013 14.25V1.75zm6.5.81V4.5c0 .14.11.25.25.25h1.94L9.5 2.56z"/></svg>';
 
-// Encode which diff to show in the view hash: s = staged (index vs HEAD), w = working-tree (vs index),
-// u = untracked (whole file as an addition). The app derives a nice tab title from the passed `title`.
+// Encode which diff to show in the view hash — diff:<mode>:<repo>:<path> — where mode is s = staged
+// (index vs HEAD), w = working-tree (vs index), u = untracked (whole file as an addition), and repo is
+// the SCM panel's active repo root. The app derives a nice tab title from the passed `title`.
 function openDiff(f: FileEntry, staged: boolean) {
+  if (f.code === '!') { openMerge(f); return; } // conflicted file → the 3-way merge editor
   const mode = staged ? 's' : (f.untracked ? 'u' : 'w');
-  void api('workbench.openView', { view: 'diff:' + mode + ':' + f.path, title: baseName(f.path) + ' — diff' });
+  // Carry the active repo into the hash — the diff opens as its own page and can't see this sidebar's
+  // in-memory `repo`, so without this it would re-guess the repo (wrong in a multi-repo workspace).
+  const r = repo ? encodeURIComponent(repo) : '';
+  void api('workbench.openView', { view: 'diff:' + mode + ':' + r + ':' + encodeURIComponent(f.path), title: baseName(f.path) + ' — diff' });
 }
 
 // Open the real working-tree file in the editor at [line]. `repo` is the guest repo root, so
@@ -898,17 +1071,24 @@ function openFileAt(path: string, line: number) {
 }
 
 async function renderDiffPage() {
-  const info = await api('workbench.projectInfo');
-  projectPath = info.ok && info.data && info.data.path ? info.data.path : null;
-  const m = VIEW.match(/^diff:([swu]):([\s\S]*)$/);
-  const mode = m ? m[1] : 'w';
-  let path = m ? m[2] : '';
+  // diff:<mode>:<repo>:<path> (current) or diff:<mode>:<path> (legacy tabs). Prefer the repo carried in
+  // the hash, then the remembered active repo, and only fall back to deriving it from the selected project.
+  const m3 = VIEW.match(/^diff:([swu]):([^:]*):([\s\S]*)$/);
+  const m2 = m3 ? null : VIEW.match(/^diff:([swu]):([\s\S]*)$/);
+  const mode = m3 ? m3[1] : (m2 ? m2[1] : 'w');
+  let path = m3 ? m3[3] : (m2 ? m2[2] : '');
   try { path = decodeURIComponent(path); } catch { /* the hash was already decoded */ }
-  repo = null;
-  if (projectPath) {
-    const top = await rawGit(projectPath, 'rev-parse --show-toplevel 2>/dev/null');
-    const root = out(top).split('\n').filter(Boolean).pop() || '';
-    if (top.exitCode === 0 && root) repo = root;
+  let hashRepo = '';
+  if (m3 && m3[2]) { try { hashRepo = decodeURIComponent(m3[2]); } catch { hashRepo = m3[2]; } }
+  repo = hashRepo || localStorage.getItem('scm.activeRepo') || null;
+  if (!repo) {
+    const info = await api('workbench.projectInfo');
+    projectPath = info.ok && info.data && info.data.path ? info.data.path : null;
+    if (projectPath) {
+      const top = await rawGit(projectPath, 'rev-parse --show-toplevel 2>/dev/null');
+      const root = out(top).split('\n').filter(Boolean).pop() || '';
+      if (top.exitCode === 0 && root) repo = root;
+    }
   }
   const sub = mode === 's' ? 'Staged changes' : mode === 'u' ? 'New file' : 'Working-tree changes';
   document.body.className = 'authpage';
@@ -955,6 +1135,132 @@ function renderDiffInto(el: HTMLElement, text: string, path: string) {
     frag.appendChild(div);
   }
   el.appendChild(frag);
+}
+
+// ---- merge conflict resolution: the "Merge Changes" list actions + the 3-way merge editor page ----
+
+// Take one whole side of a conflicted file, then stage it. --ours = current branch (HEAD),
+// --theirs = the incoming branch being merged/rebased.
+async function resolveConflict(path: string, side: 'ours' | 'theirs') {
+  await run(() => git('checkout --' + side + ' -- ' + sh(path)), async (r) => {
+    if (r.exitCode === 0) await git('add -- ' + sh(path));
+    await refreshStatus();
+  });
+}
+// Stage a hand-edited conflicted file as resolved.
+async function markResolved(path: string) {
+  await run(() => git('add -- ' + sh(path)), async () => { await refreshStatus(); });
+}
+// Open the 3-way merge editor for a conflicted file (its own editor page, like the diff view).
+function openMerge(f: FileEntry) {
+  const r = repo ? encodeURIComponent(repo) : '';
+  void api('workbench.openView', { view: 'merge:' + r + ':' + encodeURIComponent(f.path), title: baseName(f.path) + ' — merge' });
+}
+
+interface MergeSeg { conflict: boolean; text: string[]; ours: string[]; theirs: string[] }
+// Split file contents (with git conflict markers) into plain + conflict segments. Handles the default
+// (<<< ours === theirs >>>) and diff3 (adds ||| base) marker styles.
+function parseConflicts(raw: string): MergeSeg[] {
+  const lines = raw.split('\n');
+  const segs: MergeSeg[] = [];
+  let buf: string[] = [];
+  for (let i = 0; i < lines.length;) {
+    if (lines[i].indexOf('<<<<<<<') === 0) {
+      if (buf.length) { segs.push({ conflict: false, text: buf, ours: [], theirs: [] }); buf = []; }
+      const ours: string[] = [], theirs: string[] = [];
+      i++;
+      while (i < lines.length && lines[i].indexOf('=======') !== 0 && lines[i].indexOf('|||||||') !== 0) ours.push(lines[i++]);
+      if (i < lines.length && lines[i].indexOf('|||||||') === 0) { i++; while (i < lines.length && lines[i].indexOf('=======') !== 0) i++; }
+      if (i < lines.length && lines[i].indexOf('=======') === 0) i++;
+      while (i < lines.length && lines[i].indexOf('>>>>>>>') !== 0) theirs.push(lines[i++]);
+      if (i < lines.length && lines[i].indexOf('>>>>>>>') === 0) i++;
+      segs.push({ conflict: true, text: [], ours, theirs });
+    } else buf.push(lines[i++]);
+  }
+  if (buf.length) segs.push({ conflict: false, text: buf, ours: [], theirs: [] });
+  return segs;
+}
+
+// The 3-way merge editor: shows each conflict's Current (ours) and Incoming (theirs) sides plus an
+// editable Result; on save it writes the reassembled file and stages it.
+async function renderMergePage() {
+  const m = VIEW.match(/^merge:([^:]*):([\s\S]*)$/);
+  let path = ''; try { path = decodeURIComponent(m ? m[2] : ''); } catch { path = m ? m[2] : ''; }
+  let mRepo = ''; try { mRepo = decodeURIComponent(m && m[1] ? m[1] : ''); } catch { mRepo = m ? m[1] : ''; }
+  repo = mRepo || localStorage.getItem('scm.activeRepo') || repo;
+  document.body.className = 'authpage';
+  document.body.innerHTML =
+    '<div class="page pagewide">' +
+    '<div class="page-hd">' + FILE_ICON +
+    '<div style="flex:1;min-width:0"><h1 class="mono difftitle">' + escapeHtml(path) + '</h1><div class="sub">Resolve conflicts</div></div>' +
+    '<button id="mSave" class="btn primary">Save &amp; resolve</button></div>' +
+    '<div id="mNote" class="notice hide"></div>' +
+    '<div id="mBody" class="mergewrap"><div class="dempty">Loading…</div></div>' +
+    '</div>';
+  if (!repo) { $('mBody').innerHTML = '<div class="dempty">No repository.</div>'; return; }
+  const rr = await exec('cat ' + sh(path), { workdir: repo });
+  const raw = rr.stdout || '';
+  const segs = parseConflicts(raw);
+  if (!segs.some((s) => s.conflict)) {
+    $('mBody').innerHTML = '<div class="dempty">No conflict markers found. If this file is already resolved, use “Mark resolved” in the Merge Changes list.</div>';
+    return;
+  }
+  const body = $('mBody'); body.innerHTML = '';
+  const results: (HTMLTextAreaElement | null)[] = [];
+  let ci = 0;
+  for (const seg of segs) {
+    if (!seg.conflict) {
+      const n = seg.text.length;
+      const onlyBlank = n === 1 && seg.text[0] === '';
+      if (n && !onlyBlank) {
+        const ctx = document.createElement('div'); ctx.className = 'mctx';
+        ctx.textContent = '⋯ ' + n + ' unchanged line' + (n === 1 ? '' : 's') + ' ⋯';
+        body.appendChild(ctx);
+      }
+      results.push(null);
+      continue;
+    }
+    const idx = ci++;
+    const oursText = seg.ours.join('\n'), theirsText = seg.theirs.join('\n');
+    const block = document.createElement('div'); block.className = 'mconf';
+    const hd = document.createElement('div'); hd.className = 'mconf-hd';
+    const t = document.createElement('span'); t.className = 'mconf-t'; t.textContent = 'Conflict ' + (idx + 1); hd.appendChild(t);
+    const ta = document.createElement('textarea'); ta.className = 'mresult mono'; ta.value = oursText;
+    ta.rows = Math.min(20, Math.max(2, seg.ours.length + seg.theirs.length));
+    const mk = (label: string, cls: string, val: string) => {
+      const b = document.createElement('button'); b.className = 'btn tiny ' + cls; b.textContent = label;
+      b.onclick = () => { ta.value = val; }; return b;
+    };
+    hd.appendChild(mk('Current', 'cur', oursText));
+    hd.appendChild(mk('Incoming', 'inc', theirsText));
+    hd.appendChild(mk('Both', '', oursText + (oursText && theirsText ? '\n' : '') + theirsText));
+    block.appendChild(hd);
+    const sides = document.createElement('div'); sides.className = 'msides';
+    const oc = document.createElement('div'); oc.className = 'mside cur';
+    oc.innerHTML = '<div class="mside-t">Current (ours)</div><pre class="mono">' + escapeHtml(oursText) + '</pre>';
+    const tc = document.createElement('div'); tc.className = 'mside inc';
+    tc.innerHTML = '<div class="mside-t">Incoming (theirs)</div><pre class="mono">' + escapeHtml(theirsText) + '</pre>';
+    sides.appendChild(oc); sides.appendChild(tc); block.appendChild(sides);
+    const rt = document.createElement('div'); rt.className = 'mside-t'; rt.textContent = 'Result (editable)'; block.appendChild(rt);
+    block.appendChild(ta);
+    body.appendChild(block);
+    results.push(ta);
+  }
+  ($('mSave') as HTMLButtonElement).onclick = async () => {
+    const parts: string[] = [];
+    for (let k = 0; k < segs.length; k++) {
+      const seg = segs[k];
+      parts.push(seg.conflict ? (results[k] ? results[k]!.value : '') : seg.text.join('\n'));
+    }
+    const merged = parts.join('\n');
+    const b64 = btoa(unescape(encodeURIComponent(merged)));
+    await run(() => exec('printf %s ' + sh(b64) + ' | base64 -d > ' + sh(path), { workdir: repo! }), async (r) => {
+      const note = $('mNote'); note.classList.remove('hide');
+      if (r.exitCode !== 0) { note.textContent = out(r) || 'Could not write the file.'; return; }
+      await git('add -- ' + sh(path));
+      note.innerHTML = '<b>Resolved and staged.</b> Close this tab and commit from Source Control.';
+    });
+  };
 }
 
 // ---- misc ----
@@ -1096,6 +1402,8 @@ if (VIEW === 'github') {
   void renderClonePage();
 } else if (VIEW === 'remoteRepo') {
   void renderRemotePage();
+} else if (VIEW.indexOf('merge:') === 0) {
+  void renderMergePage();
 } else if (VIEW.indexOf('diff:') === 0) {
   void renderDiffPage();
 } else {
@@ -1103,7 +1411,7 @@ if (VIEW === 'github') {
     h.addEventListener('click', (e) => { if ((e.target as HTMLElement).closest('.act')) return; $(h.dataset.sec!).classList.toggle('collapsed'); });
   });
   $('refresh').dataset.keep = '1'; $('branchBtn').dataset.keep = '1'; $('ghBtn').dataset.keep = '1'; $('viewToggle').dataset.keep = '1';
-  $('refresh').onclick = () => { if (!busy) void boot(); };
+  $('refresh').onclick = () => { if (!busy) bootP = boot(); };
   $('branchBtn').onclick = toggleBranchMenu;
   $('scrim').onclick = closePops;
   $('ghBtn').onclick = () => void api('workbench.openView', { view: 'github' });
@@ -1120,5 +1428,5 @@ if (VIEW === 'github') {
   $('push').onclick = push;
   $<HTMLTextAreaElement>('msg').addEventListener('input', function (this: HTMLTextAreaElement) { this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 120) + 'px'; refreshCommitState(); });
   updateViewToggle();
-  void boot();
+  bootP = boot();
 }
