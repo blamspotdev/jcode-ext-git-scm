@@ -33,11 +33,24 @@ function api(type: string, payload?: unknown): Promise<ApiResult> {
     try { r = JSON.parse(jsonString); } catch { r = { ok: false, error: jsonString }; }
     cb(r);
   },
-  _onEvent(name: string, _json: string) {
+  _onEvent(name: string, json: string) {
     // Only the sidebar surface reloads config; the #github/#manage/#diff editor pages replaced
     // document.body and no longer have the sidebar DOM (#viewToggle, lists), so loadConfig would throw.
     if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW !== 'clone' && VIEW !== 'remoteRepo' && VIEW.indexOf('diff:') !== 0 && VIEW.indexOf('merge:') !== 0) {
       void loadConfig().then(renderLists);
+    }
+    // The sidebar surface (also booted headless by the app as the decorations host) reacts to disk
+    // changes and explorer context-menu taps; other surfaces are pages without repo state.
+    if (VIEW !== '') return;
+    if (name === 'filesChanged') scheduleDecorationRefresh();
+    if (name === 'explorerAction') {
+      let d: any = {};
+      try { d = JSON.parse(json); } catch { /* malformed event */ }
+      if (d && d.actionId === 'addToGitignore' && typeof d.path === 'string') {
+        // Queue behind boot so a tap in the first seconds isn't rejected with "not a repository"
+        // just because repo detection hasn't finished yet.
+        void bootP.then(() => addToGitignore(d.path, !!d.isDirectory));
+      }
     }
   },
 };
@@ -51,6 +64,8 @@ const baseName = (p: string) => { const i = p.replace(/\/$/, '').lastIndexOf('/'
 let projectPath: string | null = null;
 let repos: RepoInfo[] = [];
 let repo: string | null = null;
+// Latest boot()'s completion — explorer actions await it so early taps see detected repos.
+let bootP: Promise<void> = Promise.resolve();
 let busy = false;
 let viewMode: ViewMode = 'list';
 let lastStaged: FileEntry[] = [];
@@ -172,6 +187,12 @@ async function boot() {
   showMain();
   refreshCommitState();
   await refreshAll();
+  // An explorer context-menu tap stashed while this surface was still booting — handle it now.
+  const pend = await api('workbench.pendingContextAction');
+  const act = pend.ok && pend.data ? pend.data.action : null;
+  if (act && act.actionId === 'addToGitignore' && typeof act.path === 'string') {
+    void addToGitignore(act.path, !!act.isDirectory);
+  }
 }
 
 // Detect every git repo in the workspace: try workbench.workspaceFolders (multi-repo workspaces),
@@ -190,7 +211,12 @@ async function detectRepos(): Promise<RepoInfo[]> {
   for (const f of folders) {
     const top = await rawGit(f.path, 'rev-parse --show-toplevel 2>/dev/null');
     const root = out(top).split('\n').filter(Boolean).pop() || '';
-    if (top.exitCode === 0 && root && !seen.has(root)) { seen.add(root); found.push({ root, name: baseName(root) }); void injectIgnored(root); }
+    if (top.exitCode === 0 && root && !seen.has(root)) {
+      seen.add(root);
+      found.push({ root, name: baseName(root) });
+      void injectIgnored(root);
+      void pushExplorerDecorations(root);
+    }
   }
   return found;
 }
@@ -207,7 +233,105 @@ async function injectIgnored(root: string) {
   void api('workbench.setHiddenInjected', { path: root, patterns });
 }
 
-async function doInit() { setBusy(true); const r = await git('init', 30000); if (out(r)) logShow(out(r)); setBusy(false); void boot(); }
+// ---- explorer decorations (per-file VCS badges + submodule dirs in the app's file tree) ----
+
+// One status letter per path for the explorer badge: staged letter first ("AM" reads as a new file),
+// worktree/untracked letters fill the gaps, conflicts override everything as 'U'. Conflicts sort
+// first so an oversized push truncated by the app never drops them.
+function decorationsFrom(s: ReturnType<typeof parseStatus>): { path: string; status: string }[] {
+  const m = new Map<string, string>();
+  for (const f of s.staged) if (!m.has(f.path)) m.set(f.path, f.code);
+  for (const f of s.unstaged) if (!m.has(f.path)) m.set(f.path, f.untracked ? '?' : f.code);
+  for (const f of s.conflicts) m.set(f.path, 'U');
+  const all = Array.from(m.entries(), ([path, status]) => ({ path, status }));
+  return all.filter((d) => d.status === 'U').concat(all.filter((d) => d.status !== 'U'));
+}
+
+// Push one repo's working-tree status + submodule roots into the app's Explorer. Reading .gitmodules
+// via `git config -f` lists submodules even before `git submodule init`; missing file → empty list.
+// [parsed] skips the status run when the caller (refreshStatus) already has one.
+async function pushExplorerDecorations(root: string, parsed?: ReturnType<typeof parseStatus>) {
+  let s = parsed;
+  if (!s) {
+    const st = await rawGit(root, 'status --porcelain=v1 -uall');
+    if (st.exitCode !== 0) return;
+    s = parseStatus(st.stdout || '');
+  }
+  const decorations = decorationsFrom(s).slice(0, 4000);
+  const sm = await rawGit(root, "config -f .gitmodules --get-regexp '^submodule\\..*\\.path$' 2>/dev/null");
+  // Lines are "submodule.<name>.path <value>" — split at the LAST '.path ' so submodule names
+  // containing spaces (or dots) don't truncate the value.
+  const submodules = (sm.exitCode === 0 ? sm.stdout || '' : '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => { const i = l.lastIndexOf('.path '); return i < 0 ? '' : l.slice(i + 6).trim(); })
+    .filter(Boolean);
+  void api('workbench.setExplorerDecorations', { path: root, decorations, submodules });
+}
+
+// Disk-change hints (saves, explorer file ops) arrive in bursts — recompute once, shortly after the
+// last one, for every known repo, and keep the visible sidebar lists in sync for the active one.
+let decoTimer: number | undefined;
+function scheduleDecorationRefresh() {
+  clearTimeout(decoTimer);
+  decoTimer = window.setTimeout(() => {
+    void (async () => {
+      // The FIRST repo may have appeared since boot (git init / clone in the terminal) — re-boot,
+      // which re-detects repos and re-renders the sidebar out of its "no repo" notice.
+      if (!repos.length) {
+        if (!busy) bootP = boot();
+        return;
+      }
+      // Re-detect rather than iterate the cached list: another workspace folder may have become a
+      // repo since boot (detectRepos pushes decorations + ignore patterns for every repo it finds),
+      // and a deleted repo's stale badges must be cleared.
+      const prevRoots = repos.map((r) => r.root);
+      repos = await detectRepos();
+      for (const gone of prevRoots.filter((p) => !repos.some((r) => r.root === p))) {
+        void api('workbench.setExplorerDecorations', { path: gone, decorations: [], submodules: [] });
+      }
+      if (repos.length && !repos.some((r) => r.root === repo)) repo = repos[0].root;
+      if (repo && !busy) void refreshStatus();
+    })();
+  }, 400);
+}
+
+// "Add to .gitignore" from the explorer's file/folder context menu: append a root-anchored pattern
+// to the containing repo's .gitignore (unless an equivalent line already exists), then re-sync the
+// injected hide list, the decorations, and the sidebar.
+async function addToGitignore(guestPath: string, isDirectory: boolean) {
+  // Longest matching root wins, so a file inside a nested repo/submodule lands in ITS .gitignore.
+  const target = repos
+    .filter((r) => guestPath === r.root || guestPath.indexOf(r.root + '/') === 0)
+    .sort((a, b) => b.root.length - a.root.length)[0]?.root;
+  if (!target) { void api('workbench.notify', { message: 'Not inside a git repository.' }); return; }
+  if (guestPath === target) { void api('workbench.notify', { message: 'Cannot ignore the repository root.' }); return; }
+  const rel = guestPath.slice(target.length + 1);
+  if (/[\n\r]/.test(rel)) { void api('workbench.notify', { message: 'Unsupported file name for .gitignore.' }); return; }
+  // Escape gitignore glob metacharacters so "foo[1].txt" ignores that file, not "foo1.txt".
+  const relEsc = rel.replace(/([[\]*?\\])/g, '\\$1');
+  const pattern = '/' + relEsc + (isDirectory ? '/' : '');
+  const cur = await exec('cat .gitignore 2>/dev/null', { workdir: target });
+  const lines = (cur.stdout || '').split('\n').map((l) => l.trim());
+  const variants = isDirectory ? [pattern, '/' + relEsc, relEsc, relEsc + '/'] : [pattern, '/' + relEsc, relEsc];
+  if (variants.some((v) => lines.indexOf(v) >= 0)) {
+    void api('workbench.notify', { message: "'" + rel + "' is already in .gitignore." });
+    return;
+  }
+  const r = await exec(
+    '{ [ -s .gitignore ] && [ "$(tail -c 1 .gitignore)" != "" ] && echo; } >> .gitignore 2>/dev/null; ' +
+      "printf '%s\\n' " + sh(pattern) + ' >> .gitignore',
+    { workdir: target },
+  );
+  if (r.exitCode !== 0) { logShow(out(r) || 'Failed to update .gitignore'); return; }
+  void api('workbench.notify', { message: "Added '" + rel + "' to .gitignore." });
+  void injectIgnored(target);
+  void pushExplorerDecorations(target);
+  if (repo === target && !busy) void refreshStatus();
+}
+
+async function doInit() { setBusy(true); const r = await git('init', 30000); if (out(r)) logShow(out(r)); setBusy(false); bootP = boot(); }
 async function refreshAll() { await Promise.all([refreshStatus(), refreshBranches(), refreshGh()]); }
 
 // ---- config (Phase: generic extension settings; graceful fallback to localStorage) ----
@@ -277,6 +401,13 @@ function toggleRepoMenu() {
 }
 
 // ---- status ----
+// Even with core.quotePath=false, git C-quotes paths containing double quotes, backslashes, or
+// control characters. JSON.parse covers the common escapes; octal falls back to bare unquoting.
+function unquoteGitPath(p: string): string {
+  if (p.length < 2 || p[0] !== '"' || p[p.length - 1] !== '"') return p;
+  try { return JSON.parse(p) as string; } catch { return p.slice(1, -1); }
+}
+
 function parseStatus(text: string) {
   const s = { branch: '', ahead: 0, behind: 0, staged: [] as FileEntry[], unstaged: [] as FileEntry[], conflicts: [] as FileEntry[] };
   for (const line of text.split('\n')) {
@@ -296,7 +427,14 @@ function parseStatus(text: string) {
     const x = line[0], y = line[1];
     let path = line.slice(3), display = path;
     const arrow = path.indexOf(' -> ');
-    if (arrow >= 0) { const p = path.split(' -> '); path = p[1]; display = p[0] + ' → ' + p[1]; }
+    if (arrow >= 0) {
+      const p = path.split(' -> ').map(unquoteGitPath);
+      path = p[1];
+      display = p[0] + ' → ' + p[1];
+    } else {
+      path = unquoteGitPath(path);
+      display = path;
+    }
     if (x === '?' && y === '?') { s.unstaged.push({ code: '?', path, display, untracked: true }); continue; }
     // Unmerged (merge/rebase conflict): DD AU UD UA DU AA UU. Surface these separately so they can be
     // resolved, instead of double-listing the file under both Staged and Changes.
@@ -323,6 +461,8 @@ async function refreshStatus() {
   lastUnstaged = s.unstaged;
   lastConflicts = s.conflicts;
   renderLists();
+  // Keep the explorer's badges in step with every sidebar-driven git mutation (stage/commit/etc.).
+  if (repo) void pushExplorerDecorations(repo, s);
 }
 
 function renderLists() {
@@ -1255,7 +1395,7 @@ if (VIEW === 'github') {
     h.addEventListener('click', (e) => { if ((e.target as HTMLElement).closest('.act')) return; $(h.dataset.sec!).classList.toggle('collapsed'); });
   });
   $('refresh').dataset.keep = '1'; $('branchBtn').dataset.keep = '1'; $('ghBtn').dataset.keep = '1'; $('viewToggle').dataset.keep = '1';
-  $('refresh').onclick = () => { if (!busy) void boot(); };
+  $('refresh').onclick = () => { if (!busy) bootP = boot(); };
   $('branchBtn').onclick = toggleBranchMenu;
   $('scrim').onclick = closePops;
   $('ghBtn').onclick = () => void api('workbench.openView', { view: 'github' });
@@ -1272,5 +1412,5 @@ if (VIEW === 'github') {
   $('push').onclick = push;
   $<HTMLTextAreaElement>('msg').addEventListener('input', function (this: HTMLTextAreaElement) { this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 120) + 'px'; refreshCommitState(); });
   updateViewToggle();
-  void boot();
+  bootP = boot();
 }
