@@ -1403,27 +1403,43 @@ async function renderClonePage(prefill?: { url?: string; name?: string; fromRemo
   void renderStagedSection();
 }
 
-// The staged clone declares no type of its own, so ask: Project / Workspace / Discard, rendered in
-// place of the Clone button row.
+// The staged clone declares no type of its own, so ask in a dialog (same modal vocabulary as the
+// branch/commit confirms): add it as a Project, open it as a Workspace, or discard the clone.
+// Dismissing the scrim decides nothing — the clone stays staged and shows in "Staged clones".
 function renderPostCloneChoice(name: string) {
-  const row = document.querySelector('.brow');
-  if (!row) return;
-  row.innerHTML =
-    '<button class="btn primary" id="pcProject">Add as Project</button>' +
-    '<button class="btn" id="pcWorkspace">Add as Workspace</button>' +
-    '<button class="btn" id="pcDiscard">Discard</button>' +
-    '<span class="msg" id="clMsg"></span>';
-  $('pcProject').onclick = () => void chooseStaged(name, 'project');
-  $('pcWorkspace').onclick = () => void chooseStaged(name, 'workspace');
-  $('pcDiscard').onclick = () => void (async () => {
-    await exec('rm -rf ' + sh(SOURCES + '/' + name));
-    await renderClonePage();
+  setMsg('clMsg', "Cloned '" + name + "'.");
+  const back = document.createElement('div'); back.className = 'modal-scrim';
+  const dlg = document.createElement('div'); dlg.className = 'modal';
+  dlg.innerHTML =
+    '<div class="modal-title">Cloned &#8216;' + escapeHtml(name) + '&#8217;</div>' +
+    '<div class="modal-body">Add <b>' + escapeHtml(name) + '</b> as a project, or open it as a ' +
+    'workspace — its top-level folders become projects.</div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn ghost danger" id="__pcDiscard">Discard</button>' +
+    '<button class="btn ghost" id="__pcWorkspace">Workspace</button>' +
+    '<button class="btn primary" id="__pcProject">Project</button></div>';
+  back.appendChild(dlg); document.body.appendChild(back);
+  const close = () => back.remove();
+  const choose = (type: string) => { close(); void chooseStaged(name, type); };
+  document.getElementById('__pcProject')!.onclick = () => choose('project');
+  document.getElementById('__pcWorkspace')!.onclick = () => choose('workspace');
+  document.getElementById('__pcDiscard')!.onclick = () => void (async () => {
+    close();
+    setBusy(true);
+    try {
+      await exec('rm -rf ' + sh(SOURCES + '/' + name));
+    } finally {
+      setBusy(false);
+    }
+    setMsg('clMsg', "Discarded '" + name + "'.");
+    void renderStagedSection();
   })();
-  setMsg('clMsg', "Cloned '" + name + "' — add it as?");
+  back.onclick = (e) => { if (e.target === back) { close(); void renderStagedSection(); } };
 }
 
 async function chooseStaged(name: string, type: string) {
   if (await addStagedFolder(name, type, 'clMsg') === 'added') await closeSelf();
+  else void renderStagedSection();
 }
 
 async function doClone(url0?: string, name0?: string) {
