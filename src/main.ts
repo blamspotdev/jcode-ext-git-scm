@@ -1273,9 +1273,11 @@ function sanitizeName(s: string): string {
   return (s || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'project';
 }
 
-// Destinations the host offers for a clone (the Default "Projects" root + any user Workspace),
-// fetched from workbench.cloneDestinations. `guestPath` is where the clone is physically placed;
-// `id` is passed back to workbench.openFolder so the host registers the project in that workspace.
+// Destinations the host offers for a clone, fetched from workbench.cloneDestinations. Current hosts
+// return a single "Sources" staging destination (guest /sources, app-private ext4) and classify the
+// clone as Project or Workspace in a native prompt after workbench.openFolder; the dropdown only
+// renders when a host offers more than one destination (e.g. an older app's workspace list).
+// `guestPath` is where the clone is physically placed; `id` is passed back to workbench.openFolder.
 interface CloneDest { id: string; label: string; guestPath: string }
 const DEFAULT_DEST: CloneDest = { id: 'default', label: 'Projects', guestPath: '/workspace' };
 let clDests: CloneDest[] = [DEFAULT_DEST];
@@ -1307,13 +1309,16 @@ async function renderClonePage(prefill?: { url?: string; name?: string; fromRemo
   document.body.className = 'authpage';
   await loadCloneDestinations();
   const opts = clDests.map((d) => '<option value="' + escapeAttr(d.id) + '">' + escapeHtml(d.label) + '</option>').join('');
+  const destRow = clDests.length > 1
+    ? '<div class="frow"><label>Destination</label><select id="clDest">' + opts + '</select></div>'
+    : '';
   document.body.innerHTML =
     '<div class="page">' +
     '<div class="page-hd">' + OCTOCAT + '<div><h1>Clone a repository</h1><div class="sub">Clone a Git repository into a new project</div></div></div>' +
     '<div class="card">' +
     '<div class="frow"><label>Repository URL</label><input id="clUrl" placeholder="https://github.com/owner/repo.git" autocapitalize="none" autocorrect="off" spellcheck="false"></div>' +
     '<div class="frow"><label>Folder name</label><input id="clName" placeholder="(optional — taken from the URL)"></div>' +
-    '<div class="frow"><label>Destination</label><select id="clDest">' + opts + '</select></div>' +
+    destRow +
     '<div class="cl-preview" id="clPreview"></div>' +
     '<div class="brow"><button id="clBtn" class="btn primary">Clone</button>' +
     (prefill && prefill.fromRemote ? '<button id="clCancel" class="btn">Cancel</button>' : '') +
@@ -1347,9 +1352,9 @@ async function doClone(url0?: string, name0?: string) {
   const tmp = '/root/.jcode-clone-' + name;
   const exists = out(await exec('test -e ' + sh(target) + ' && echo yes', { workdir: wd })).trim();
   if (exists === 'yes') { if (btn) btn.disabled = false; setMsg('clMsg', "A folder named '" + name + "' already exists.", true); return; }
-  // Clone onto ext4 (index-pack can't write a pack to the external-storage /workspace mount), then
-  // dereference proot --link2symlink pack symlinks (stat() gives EPERM but open()/cat still reads them)
-  // into regular files, and copy the symlink-free tree into /workspace.
+  // Clone into a guest-home temp dir first, dereference proot --link2symlink pack symlinks (stat()
+  // gives EPERM but open()/cat still reads them) into regular files, then copy the symlink-free tree
+  // to the destination so the host can read every file (e.g. from the Explorer/DocumentsProvider).
   const deref = 'find ' + sh(tmp) + ' -type l 2>/dev/null | while IFS= read -r l; do ' +
     'if cat "$l" > "$l.deref" 2>/dev/null && [ -s "$l.deref" ]; then rm -f "$l"; mv "$l.deref" "$l"; ' +
     'else rm -f "$l.deref" "$l"; fi; done';
