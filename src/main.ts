@@ -83,7 +83,11 @@ async function exec(cmd: string, opts: { workdir?: string | null; timeoutMs?: nu
   return r.data as ExecResult;
 }
 // Every git runs with safe.directory='*' (root may not own the files) and quotePath off (verbatim paths).
-const GITP = "git -c safe.directory='*' -c core.quotePath=false ";
+// core.createObject=rename: git finalizes objects/packs with link()+unlink(), which proot's
+// --link2symlink emulates as a symlink onto an `.l2s.*` backing file — the clone pipeline's cleanup
+// then destroyed the object store (fatal: bad object HEAD on every pack-transferred clone). rename()
+// produces plain files, so no git write (clone, commit, gc) ever leaves l2s artifacts.
+const GITP = "git -c safe.directory='*' -c core.quotePath=false -c core.createObject=rename ";
 const rawGit = (workdir: string, args: string, t?: number) => exec(GITP + args, { workdir, timeoutMs: t });
 const git = (args: string, t?: number) => exec(GITP + args, { workdir: repo, timeoutMs: t });
 
@@ -1492,8 +1496,11 @@ async function runStagedClone(url: string, name: string, type: string) {
     'else rm -f "$l.deref" "$l"; fi; done';
   const finalize = 'rm -rf ' + sh(stage) + ' && cp -r ' + sh(tmp) + ' ' + sh(stage) +
     ' && rm -rf ' + sh(tmp) + ' && mv ' + sh(stage) + ' ' + sh(target);
+  // Deref FIRST, delete `.l2s.*` after: the backing files are named `.l2s.<original>` and deleting
+  // them before the deref materializes the symlinks orphans (then deletes) whatever they carried —
+  // that ordering destroyed every pack-transferred clone's object store.
   const cmd = 'rm -rf ' + sh(tmp) + ' ' + sh(target) + ' && ' + GITP + 'clone --progress ' + sh(url) + ' ' + sh(tmp) + ' && ' +
-    '{ find ' + sh(tmp) + " -name '.l2s.tmp_*' -delete 2>/dev/null; " + deref + '; ' +
+    '{ ' + deref + '; ' +
     'find ' + sh(tmp) + " -name '.l2s.*' -delete 2>/dev/null; find " + sh(tmp) + ' -xtype l -delete 2>/dev/null; ' +
     finalize + '; }';
   const r = await exec(cmd, { workdir: SOURCES, timeoutMs: 600000 });
@@ -1530,7 +1537,7 @@ async function runLegacyClone(url: string, name: string) {
     'if cat "$l" > "$l.deref" 2>/dev/null && [ -s "$l.deref" ]; then rm -f "$l"; mv "$l.deref" "$l"; ' +
     'else rm -f "$l.deref" "$l"; fi; done';
   const cmd = 'rm -rf ' + sh(tmp) + ' && ' + GITP + 'clone --progress ' + sh(url) + ' ' + sh(tmp) + ' && ' +
-    '{ find ' + sh(tmp) + " -name '.l2s.tmp_*' -delete 2>/dev/null; " + deref + '; ' +
+    '{ ' + deref + '; ' +
     'find ' + sh(tmp) + " -name '.l2s.*' -delete 2>/dev/null; find " + sh(tmp) + ' -xtype l -delete 2>/dev/null; ' +
     'cp -r ' + sh(tmp) + ' ' + sh(target) + ' && rm -rf ' + sh(tmp) + '; }';
   const r = await exec(cmd, { workdir: wd, timeoutMs: 600000 });
