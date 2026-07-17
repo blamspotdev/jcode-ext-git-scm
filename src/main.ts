@@ -1306,6 +1306,49 @@ function updateClonePreview() {
   el.textContent = 'Clones into ' + (sourcesSupported ? SOURCES : '/workspace') + '/' + name;
 }
 
+// Live peek at the repo before cloning: for a valid web URL, a commits-only shallow fetch (bare,
+// depth 6, tree:0 filter — servers without partial-clone support just ignore the filter) shows the
+// last 6 commits at the bottom of the page, styled like the SCM panel's history. Debounced while
+// typing, superseded fetches are dropped, and any failure hides the section — the peek never blocks
+// or gates cloning.
+let peekSeq = 0;
+let peekTimer: number | undefined;
+let peekShownFor = '';
+
+function schedulePeek() {
+  if (peekTimer !== undefined) clearTimeout(peekTimer);
+  peekTimer = window.setTimeout(() => void peekCommits(), 700);
+}
+
+async function peekCommits() {
+  const holder = document.getElementById('clPeek');
+  if (!holder) return;
+  const url = ((document.getElementById('clUrl') as HTMLInputElement | null)?.value || '').trim();
+  const seq = ++peekSeq;
+  if (!/^https?:\/\/\S+$/.test(url)) { peekShownFor = ''; holder.innerHTML = ''; return; }
+  if (url === peekShownFor) return;
+  holder.innerHTML = '<div class="card" style="margin-top:10px"><div class="muted" style="font-size:12.5px">Loading latest commits…</div></div>';
+  const tmp = '/root/.jcode-peek';
+  const cmd = 'rm -rf ' + sh(tmp) + ' && ' + GITP + 'clone -q --bare --depth 6 --filter=tree:0 --no-tags ' +
+    sh(url) + ' ' + sh(tmp) + ' && ' + GITP + '--git-dir=' + sh(tmp) +
+    " log -n 6 --pretty=format:'%h%x1f%an%x1f%ar%x1f%s'; rm -rf " + sh(tmp);
+  const r = await exec(cmd, { timeoutMs: 60000 });
+  if (seq !== peekSeq) return;
+  const cur = document.getElementById('clPeek');
+  if (!cur) return;
+  const lines = r.exitCode === 0 ? out(r).split('\n').filter((l) => l.includes('\x1f')) : [];
+  if (!lines.length) { peekShownFor = ''; cur.innerHTML = ''; return; }
+  peekShownFor = url;
+  cur.innerHTML =
+    '<div class="card" style="margin-top:10px"><h3 style="margin:0 0 4px">Latest commits</h3>' +
+    lines.slice(0, 6).map((line) => {
+      const p = line.split('\x1f');
+      return '<div class="crow"><div class="cline"><span class="chash">' + escapeHtml(p[0] || '') + '</span>' +
+        '<span class="csubj">' + escapeHtml(p[3] || '') + '</span></div>' +
+        '<div class="cmeta">' + escapeHtml((p[1] || '') + ' · ' + (p[2] || '')) + '</div></div>';
+    }).join('') + '</div>';
+}
+
 // Hand a staged folder to the host, which moves it out of /sources and opens it. Passing no `type`
 // lets the host adopt the folder as whatever its own `.jcode` declares — a repo that ships one
 // already knows what it is. The host answers `needsType` when the folder declares nothing, and the
@@ -1357,7 +1400,7 @@ async function renderClonePage(prefill?: { url?: string; name?: string; fromRemo
     (prefill && prefill.fromRemote ? '<button id="clCancel" class="btn">Cancel</button>' : '') +
     '<span class="msg" id="clMsg"></span></div>' +
     '<pre class="modal-log" id="clLog" style="display:none;margin-top:10px"></pre>' +
-    '</div></div>';
+    '</div><div id="clPeek"></div></div>';
   const u = document.getElementById('clUrl') as HTMLInputElement | null;
   if (u && prefill && prefill.url) u.value = prefill.url;
   const n = document.getElementById('clName') as HTMLInputElement | null;
@@ -1366,7 +1409,9 @@ async function renderClonePage(prefill?: { url?: string; name?: string; fromRemo
   const cancel = document.getElementById('clCancel');
   if (cancel) cancel.onclick = () => void renderRemotePage();
   n?.addEventListener('input', updateClonePreview);
+  u?.addEventListener('input', schedulePeek);
   updateClonePreview();
+  schedulePeek();
 }
 
 // Ask BEFORE anything is downloaded how the repo should open; Cancel (or the scrim) clones nothing.
