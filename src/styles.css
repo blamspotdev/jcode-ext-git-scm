@@ -20,9 +20,9 @@ html,body{margin:0;height:100%}
 body{background:var(--bg);color:var(--fg);font:12.5px/1.4 -apple-system,Roboto,"Segoe UI",sans-serif;
   -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
 button{font:inherit;color:inherit;border:0;background:none;cursor:pointer;-webkit-tap-highlight-color:transparent}
-input,textarea{font:inherit;color:var(--fg);background:color-mix(in srgb, var(--bg) 70%, #000 30%);
+input,textarea,select{font:inherit;color:var(--fg);background:color-mix(in srgb, var(--bg) 70%, #000 30%);
   border:1px solid var(--line);border-radius:6px;padding:7px 8px;width:100%;-webkit-user-select:text;user-select:text}
-input:focus,textarea:focus{outline:none;border-color:var(--accent)}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent)}
 .sp{flex:1}
 .hide{display:none!important}
 .ic{flex:none;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;color:var(--muted)}
@@ -174,7 +174,8 @@ body.authpage{padding:0;overflow-y:auto}
 .card .gh-user{margin-bottom:2px}
 .frow{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
 .frow label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
-.frow input{height:38px}
+.frow input,.frow select{height:38px}
+.cl-preview{font-size:12px;color:var(--muted);margin:-4px 0 10px}
 .brow{display:flex;align-items:center;gap:10px}
 .card .btn{height:36px}
 
