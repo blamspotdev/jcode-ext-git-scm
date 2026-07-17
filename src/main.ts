@@ -1303,22 +1303,36 @@ function updateClonePreview() {
   el.textContent = 'Clones into ' + (sourcesSupported ? SOURCES : '/workspace') + '/' + name;
 }
 
-// Adopt a staged /sources folder into the workbench as a project or a workspace. The app moves the
-// folder out of /sources and opens it; on failure the folder stays staged.
-async function addStagedFolder(name: string, type: string, msgId: string): Promise<boolean> {
+// Hand a staged folder to the host, which moves it out of /sources and opens it; on failure it stays
+// staged. Passing no `type` lets the host adopt the folder as whatever its own `.jcode` declares — a
+// repo that ships one already knows what it is. The host answers `needsType` when the folder declares
+// nothing, which is the only case worth asking the user about.
+type AddOutcome = 'added' | 'needsType' | 'failed';
+
+async function addStagedFolder(name: string, type: string, msgId: string): Promise<AddOutcome> {
   setBusy(true);
   setMsg(msgId, 'Adding…');
   try {
-    const r = await api('workbench.addFolder', { path: SOURCES + '/' + name, type });
-    if (r && r.ok) {
-      setMsg(msgId, (type === 'workspace' ? "Workspace '" : "Opened '") + name + (type === 'workspace' ? "' opened." : "'."));
-      return true;
+    const payload: Record<string, string> = { path: SOURCES + '/' + name };
+    if (type) payload.type = type;
+    const r = await api('workbench.addFolder', payload);
+    if (!r || !r.ok) {
+      setMsg(msgId, (r && (r as any).error) || 'Could not add the folder.', true);
+      return 'failed';
     }
-    setMsg(msgId, (r && (r as any).error) || 'Could not add the folder.', true);
-    return false;
+    if ((r.data as any) && (r.data as any).needsType) return 'needsType';
+    const asWorkspace = !!((r.data as any) && (r.data as any).workspace);
+    setMsg(msgId, (asWorkspace ? "Workspace '" : "Opened '") + name + (asWorkspace ? "' opened." : "'."));
+    return 'added';
   } finally {
     setBusy(false);
   }
+}
+
+// The clone is in the workbench now, so this page has done its job — close the tab it was opened as
+// (#clone or #remoteRepo). Hosts without the verb answer not-ok, which is a harmless no-op.
+async function closeSelf() {
+  await api('workbench.closeView', { view: VIEW });
 }
 
 // Clones still sitting in /sources (e.g. the app closed before they were added). Each row offers the
@@ -1356,7 +1370,8 @@ async function resolveStaged(name: string, action: string) {
     void renderStagedSection();
     return;
   }
-  if (await addStagedFolder(name, action, 'clStagedMsg')) void renderStagedSection();
+  if (await addStagedFolder(name, action, 'clStagedMsg') === 'added') await closeSelf();
+  else void renderStagedSection();
 }
 
 // Renders the clone form. When opened from the Remote-repo browser (via cloneRemoteRepo) the URL and
@@ -1388,8 +1403,8 @@ async function renderClonePage(prefill?: { url?: string; name?: string; fromRemo
   void renderStagedSection();
 }
 
-// After a staged clone succeeds: the Project / Workspace / Discard choice, rendered in place of the
-// Clone button row.
+// The staged clone declares no type of its own, so ask: Project / Workspace / Discard, rendered in
+// place of the Clone button row.
 function renderPostCloneChoice(name: string) {
   const row = document.querySelector('.brow');
   if (!row) return;
@@ -1398,12 +1413,17 @@ function renderPostCloneChoice(name: string) {
     '<button class="btn" id="pcWorkspace">Add as Workspace</button>' +
     '<button class="btn" id="pcDiscard">Discard</button>' +
     '<span class="msg" id="clMsg"></span>';
-  $('pcProject').onclick = () => void addStagedFolder(name, 'project', 'clMsg');
-  $('pcWorkspace').onclick = () => void addStagedFolder(name, 'workspace', 'clMsg');
+  $('pcProject').onclick = () => void chooseStaged(name, 'project');
+  $('pcWorkspace').onclick = () => void chooseStaged(name, 'workspace');
   $('pcDiscard').onclick = () => void (async () => {
     await exec('rm -rf ' + sh(SOURCES + '/' + name));
     await renderClonePage();
   })();
+  setMsg('clMsg', "Cloned '" + name + "' — add it as?");
+}
+
+async function chooseStaged(name: string, type: string) {
+  if (await addStagedFolder(name, type, 'clMsg') === 'added') await closeSelf();
 }
 
 async function doClone(url0?: string, name0?: string) {
@@ -1448,14 +1468,18 @@ async function doClone(url0?: string, name0?: string) {
     return;
   }
   if (staging) {
-    setMsg('clMsg', "Cloned '" + name + "'.");
-    renderPostCloneChoice(name);
+    // A repo that ships its own .jcode already declares what it is, so the host adopts it without
+    // asking; only an undeclared one comes back needing the Project/Workspace choice.
+    const outcome = await addStagedFolder(name, '', 'clMsg');
+    if (outcome === 'needsType') renderPostCloneChoice(name);
+    else if (outcome === 'added') await closeSelf();
   } else {
     // Older host without /sources: the clone physically sits in /workspace (the Default Workspace's
     // projects root), so the registration must target it explicitly — a blank destinationId would
     // register a phantom folder under whatever workspace happens to be open.
     setMsg('clMsg', 'Cloned — opening…');
     await api('workbench.openFolder', { name, destinationId: 'default' });
+    await closeSelf();
   }
 }
 
