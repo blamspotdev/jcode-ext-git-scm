@@ -1273,18 +1273,63 @@ function sanitizeName(s: string): string {
   return (s || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'project';
 }
 
-async function renderClonePage() {
+// Destinations the host offers for a clone (the Default "Projects" root + any user Workspace),
+// fetched from workbench.cloneDestinations. `guestPath` is where the clone is physically placed;
+// `id` is passed back to workbench.openFolder so the host registers the project in that workspace.
+interface CloneDest { id: string; label: string; guestPath: string }
+const DEFAULT_DEST: CloneDest = { id: 'default', label: 'Projects', guestPath: '/workspace' };
+let clDests: CloneDest[] = [DEFAULT_DEST];
+
+async function loadCloneDestinations() {
+  const r = await api('workbench.cloneDestinations');
+  const list = r && r.ok && r.data && Array.isArray((r.data as any).destinations)
+    ? ((r.data as any).destinations as CloneDest[]).filter((d) => d && d.id && d.guestPath)
+    : [];
+  clDests = list.length ? list : [DEFAULT_DEST];
+}
+
+function selectedDest(): CloneDest {
+  const sel = document.getElementById('clDest') as HTMLSelectElement | null;
+  return clDests.find((d) => d.id === (sel?.value || '')) || clDests[0] || DEFAULT_DEST;
+}
+
+function updateClonePreview() {
+  const el = document.getElementById('clPreview');
+  if (!el) return;
+  const raw = (document.getElementById('clName') as HTMLInputElement | null)?.value || '';
+  const name = raw.trim() ? sanitizeName(raw) : '…';
+  el.textContent = 'Clones into ' + selectedDest().label + ' / ' + name;
+}
+
+// Renders the clone form. When opened from the Remote-repo browser (via cloneRemoteRepo) the URL and
+// name are pre-filled and a Cancel returns to the list — the clone only runs when the user taps Clone.
+async function renderClonePage(prefill?: { url?: string; name?: string; fromRemote?: boolean }) {
   document.body.className = 'authpage';
+  await loadCloneDestinations();
+  const opts = clDests.map((d) => '<option value="' + escapeAttr(d.id) + '">' + escapeHtml(d.label) + '</option>').join('');
   document.body.innerHTML =
     '<div class="page">' +
     '<div class="page-hd">' + OCTOCAT + '<div><h1>Clone a repository</h1><div class="sub">Clone a Git repository into a new project</div></div></div>' +
     '<div class="card">' +
     '<div class="frow"><label>Repository URL</label><input id="clUrl" placeholder="https://github.com/owner/repo.git" autocapitalize="none" autocorrect="off" spellcheck="false"></div>' +
     '<div class="frow"><label>Folder name</label><input id="clName" placeholder="(optional — taken from the URL)"></div>' +
-    '<div class="brow"><button id="clBtn" class="btn primary">Clone</button><span class="msg" id="clMsg"></span></div>' +
+    '<div class="frow"><label>Destination</label><select id="clDest">' + opts + '</select></div>' +
+    '<div class="cl-preview" id="clPreview"></div>' +
+    '<div class="brow"><button id="clBtn" class="btn primary">Clone</button>' +
+    (prefill && prefill.fromRemote ? '<button id="clCancel" class="btn">Cancel</button>' : '') +
+    '<span class="msg" id="clMsg"></span></div>' +
     '<pre class="modal-log" id="clLog" style="display:none;margin-top:10px"></pre>' +
     '</div></div>';
+  const u = document.getElementById('clUrl') as HTMLInputElement | null;
+  if (u && prefill && prefill.url) u.value = prefill.url;
+  const n = document.getElementById('clName') as HTMLInputElement | null;
+  if (n && prefill && prefill.name) n.value = prefill.name;
   $('clBtn').onclick = () => void doClone();
+  const cancel = document.getElementById('clCancel');
+  if (cancel) cancel.onclick = () => void renderRemotePage();
+  n?.addEventListener('input', updateClonePreview);
+  (document.getElementById('clDest') as HTMLSelectElement | null)?.addEventListener('change', updateClonePreview);
+  updateClonePreview();
 }
 
 async function doClone(url0?: string, name0?: string) {
@@ -1293,11 +1338,12 @@ async function doClone(url0?: string, name0?: string) {
   const raw = (name0 || (document.getElementById('clName') as HTMLInputElement | null)?.value || '').trim() ||
     url.replace(/\/$/, '').replace(/\.git$/, '').split('/').pop() || 'repo';
   const name = sanitizeName(raw);
+  const dest = selectedDest();
   const btn = document.getElementById('clBtn') as HTMLButtonElement | null;
   if (btn) btn.disabled = true;
   setMsg('clMsg', 'Cloning…');
-  const wd = '/workspace';
-  const target = '/workspace/' + name;
+  const wd = dest.guestPath;
+  const target = dest.guestPath.replace(/\/+$/, '') + '/' + name;
   const tmp = '/root/.jcode-clone-' + name;
   const exists = out(await exec('test -e ' + sh(target) + ' && echo yes', { workdir: wd })).trim();
   if (exists === 'yes') { if (btn) btn.disabled = false; setMsg('clMsg', "A folder named '" + name + "' already exists.", true); return; }
@@ -1321,7 +1367,7 @@ async function doClone(url0?: string, name0?: string) {
     return;
   }
   setMsg('clMsg', 'Cloned — opening…');
-  await api('workbench.openFolder', { name });
+  await api('workbench.openFolder', { name, destinationId: dest.id });
 }
 
 let rrRepos: any[] = [];
@@ -1384,11 +1430,10 @@ function renderRemoteList(owners: string[]) {
   body.querySelectorAll<HTMLElement>('.rr-repo').forEach((el) => { el.onclick = () => void cloneRemoteRepo(el.dataset.url as string, el.dataset.name as string); });
 }
 
+// Tapping a repo in the Remote-repo browser opens the clone form pre-filled for review (editable
+// name + destination) instead of cloning immediately — the user confirms with the Clone button.
 async function cloneRemoteRepo(url: string, name: string) {
-  await renderClonePage();
-  const u = document.getElementById('clUrl') as HTMLInputElement | null; if (u) u.value = url;
-  const n = document.getElementById('clName') as HTMLInputElement | null; if (n) n.value = name;
-  void doClone(url, name);
+  await renderClonePage({ url, name, fromRemote: true });
 }
 
 // The extension renders two surfaces from one bundle: the SCM sidebar (drawer) and, when opened via
