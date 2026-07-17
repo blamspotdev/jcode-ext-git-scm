@@ -1306,6 +1306,29 @@ function updateClonePreview() {
   el.textContent = 'Clones into ' + (sourcesSupported ? SOURCES : '/workspace') + '/' + name;
 }
 
+// Folder-name auto-fill: a valid web URL fills the name field with its repo segment (last path
+// piece, .git stripped — the same default the clone itself would use). A name the user typed is
+// never overwritten: the field is only auto-owned while empty or still holding the last auto-fill.
+let lastAutoName = '';
+
+function nameFromUrl(url: string): string {
+  const parts = url.replace(/^https?:\/\//, '').replace(/\/+$/, '').split('/');
+  if (parts.length < 2) return '';
+  return (parts.pop() || '').replace(/\.git$/, '');
+}
+
+function autofillName() {
+  const url = ((document.getElementById('clUrl') as HTMLInputElement | null)?.value || '').trim();
+  const n = document.getElementById('clName') as HTMLInputElement | null;
+  if (!n) return;
+  const current = n.value.trim();
+  if (current !== '' && current !== lastAutoName) return;
+  const next = /^https?:\/\/\S+$/.test(url) ? nameFromUrl(url) : '';
+  n.value = next;
+  lastAutoName = next;
+  updateClonePreview();
+}
+
 // Live peek at the repo before cloning: for a valid web URL, a commits-only shallow fetch (bare,
 // depth 6, tree:0 filter — servers without partial-clone support just ignore the filter) shows the
 // last 6 commits at the bottom of the page, styled like the SCM panel's history. Debounced while
@@ -1405,11 +1428,14 @@ async function renderClonePage(prefill?: { url?: string; name?: string; fromRemo
   if (u && prefill && prefill.url) u.value = prefill.url;
   const n = document.getElementById('clName') as HTMLInputElement | null;
   if (n && prefill && prefill.name) n.value = prefill.name;
+  // A prefilled name (Remote Repo flow) counts as auto-filled, so later URL edits keep updating it.
+  lastAutoName = n?.value.trim() || '';
   $('clBtn').onclick = () => void doClone();
   const cancel = document.getElementById('clCancel');
   if (cancel) cancel.onclick = () => void renderRemotePage();
   n?.addEventListener('input', updateClonePreview);
-  u?.addEventListener('input', schedulePeek);
+  u?.addEventListener('input', () => { autofillName(); schedulePeek(); });
+  autofillName();
   updateClonePreview();
   schedulePeek();
 }
