@@ -1268,31 +1268,31 @@ function escapeHtml(s: string) { return s.replace(/[&<>]/g, (c) => ({ '&': '&amp
 function escapeAttr(s: string) { return s.replace(/"/g, '&quot;'); }
 
 // ---- Clone repo + Remote repo browser (opened in the editor via workbench.openView #clone / #remoteRepo) ----
-// Must match WorkspaceManager.sanitizedFolderName so the clone target lines up with what the app registers.
+// Must match WorkspaceManager.sanitizedFolderName so the clone target lines up with what the app
+// registers. Additionally strips leading dots: workbench.addFolder refuses dot-named staged folders
+// (and `ls`/hidden-file conventions would hide them), so a repo like ".dotfiles" stages as "dotfiles".
 function sanitizeName(s: string): string {
-  return (s || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'project';
+  return (s || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[.-]+|-+$/g, '') || 'project';
 }
 
-// Destinations the host offers for a clone, fetched from workbench.cloneDestinations. Current hosts
-// return a single "Sources" staging destination (guest /sources, app-private ext4) and classify the
-// clone as Project or Workspace in a native prompt after workbench.openFolder; the dropdown only
-// renders when a host offers more than one destination (e.g. an older app's workspace list).
-// `guestPath` is where the clone is physically placed; `id` is passed back to workbench.openFolder.
-interface CloneDest { id: string; label: string; guestPath: string }
-const DEFAULT_DEST: CloneDest = { id: 'default', label: 'Projects', guestPath: '/workspace' };
-let clDests: CloneDest[] = [DEFAULT_DEST];
+// The whole clone flow lives in this extension; the app only provides infrastructure. Current hosts
+// bind an ext4 staging dir at guest /sources and expose the generic workbench.addFolder bridge —
+// clones land in /sources, then the user picks Project / Workspace / Discard here and the choice is
+// executed via addFolder (or a plain rm -rf for Discard). Older hosts have neither: probed once via
+// the mount's existence, the clone then lands directly in /workspace and is registered through the
+// legacy workbench.openFolder, matching the pre-staging behavior.
+const SOURCES = '/sources';
+let sourcesSupported: boolean | null = null;
 
-async function loadCloneDestinations() {
-  const r = await api('workbench.cloneDestinations');
-  const list = r && r.ok && r.data && Array.isArray((r.data as any).destinations)
-    ? ((r.data as any).destinations as CloneDest[]).filter((d) => d && d.id && d.guestPath)
-    : [];
-  clDests = list.length ? list : [DEFAULT_DEST];
-}
-
-function selectedDest(): CloneDest {
-  const sel = document.getElementById('clDest') as HTMLSelectElement | null;
-  return clDests.find((d) => d.id === (sel?.value || '')) || clDests[0] || DEFAULT_DEST;
+async function probeSources(): Promise<boolean> {
+  if (sourcesSupported === null) {
+    // Cache only a definitive yes/no — a transient exec failure (runtime still booting) must not
+    // permanently route a staging-capable host down the legacy path.
+    const t = out(await exec('test -d ' + SOURCES + ' && echo yes || echo no')).trim();
+    if (t === 'yes' || t === 'no') sourcesSupported = t === 'yes';
+    else return false;
+  }
+  return sourcesSupported;
 }
 
 function updateClonePreview() {
@@ -1300,31 +1300,82 @@ function updateClonePreview() {
   if (!el) return;
   const raw = (document.getElementById('clName') as HTMLInputElement | null)?.value || '';
   const name = raw.trim() ? sanitizeName(raw) : '…';
-  el.textContent = 'Clones into ' + selectedDest().label + ' / ' + name;
+  el.textContent = 'Clones into ' + (sourcesSupported ? SOURCES : '/workspace') + '/' + name;
+}
+
+// Adopt a staged /sources folder into the workbench as a project or a workspace. The app moves the
+// folder out of /sources and opens it; on failure the folder stays staged.
+async function addStagedFolder(name: string, type: string, msgId: string): Promise<boolean> {
+  setBusy(true);
+  setMsg(msgId, 'Adding…');
+  try {
+    const r = await api('workbench.addFolder', { path: SOURCES + '/' + name, type });
+    if (r && r.ok) {
+      setMsg(msgId, (type === 'workspace' ? "Workspace '" : "Opened '") + name + (type === 'workspace' ? "' opened." : "'."));
+      return true;
+    }
+    setMsg(msgId, (r && (r as any).error) || 'Could not add the folder.', true);
+    return false;
+  } finally {
+    setBusy(false);
+  }
+}
+
+// Clones still sitting in /sources (e.g. the app closed before they were added). Each row offers the
+// same Project / Workspace / Discard choices as a fresh clone. Directories only — stray files or an
+// in-flight .stage-* copy must not be offered as adoptable.
+async function renderStagedSection() {
+  const holder = document.getElementById('clStaged');
+  if (!holder || !(await probeSources())) return;
+  const names = out(await exec(
+    'find ' + SOURCES + " -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null | sed 's|.*/||'",
+  )).split('\n').map((s) => s.trim()).filter(Boolean).sort();
+  if (!names.length) { holder.innerHTML = ''; return; }
+  holder.innerHTML =
+    '<div class="card" style="margin-top:10px"><h3 style="margin:0 0 8px">Staged clones</h3>' +
+    names.map((n) =>
+      '<div class="frow" style="flex-direction:row;align-items:center;gap:6px"><label style="flex:1">' + escapeHtml(n) + '</label>' +
+      '<button class="btn" data-add="project" data-name="' + escapeAttr(n) + '">Project</button>' +
+      '<button class="btn" data-add="workspace" data-name="' + escapeAttr(n) + '">Workspace</button>' +
+      '<button class="btn" data-add="discard" data-name="' + escapeAttr(n) + '">Discard</button></div>',
+    ).join('') +
+    '<span class="msg" id="clStagedMsg"></span></div>';
+  holder.querySelectorAll<HTMLButtonElement>('button[data-add]').forEach((b) => {
+    b.onclick = () => void resolveStaged(b.dataset.name as string, b.dataset.add as string);
+  });
+}
+
+async function resolveStaged(name: string, action: string) {
+  if (action === 'discard') {
+    setBusy(true);
+    try {
+      await exec('rm -rf ' + sh(SOURCES + '/' + name));
+    } finally {
+      setBusy(false);
+    }
+    void renderStagedSection();
+    return;
+  }
+  if (await addStagedFolder(name, action, 'clStagedMsg')) void renderStagedSection();
 }
 
 // Renders the clone form. When opened from the Remote-repo browser (via cloneRemoteRepo) the URL and
 // name are pre-filled and a Cancel returns to the list — the clone only runs when the user taps Clone.
 async function renderClonePage(prefill?: { url?: string; name?: string; fromRemote?: boolean }) {
   document.body.className = 'authpage';
-  await loadCloneDestinations();
-  const opts = clDests.map((d) => '<option value="' + escapeAttr(d.id) + '">' + escapeHtml(d.label) + '</option>').join('');
-  const destRow = clDests.length > 1
-    ? '<div class="frow"><label>Destination</label><select id="clDest">' + opts + '</select></div>'
-    : '';
+  await probeSources();
   document.body.innerHTML =
     '<div class="page">' +
     '<div class="page-hd">' + OCTOCAT + '<div><h1>Clone a repository</h1><div class="sub">Clone a Git repository into a new project</div></div></div>' +
     '<div class="card">' +
     '<div class="frow"><label>Repository URL</label><input id="clUrl" placeholder="https://github.com/owner/repo.git" autocapitalize="none" autocorrect="off" spellcheck="false"></div>' +
     '<div class="frow"><label>Folder name</label><input id="clName" placeholder="(optional — taken from the URL)"></div>' +
-    destRow +
     '<div class="cl-preview" id="clPreview"></div>' +
     '<div class="brow"><button id="clBtn" class="btn primary">Clone</button>' +
     (prefill && prefill.fromRemote ? '<button id="clCancel" class="btn">Cancel</button>' : '') +
     '<span class="msg" id="clMsg"></span></div>' +
     '<pre class="modal-log" id="clLog" style="display:none;margin-top:10px"></pre>' +
-    '</div></div>';
+    '</div><div id="clStaged"></div></div>';
   const u = document.getElementById('clUrl') as HTMLInputElement | null;
   if (u && prefill && prefill.url) u.value = prefill.url;
   const n = document.getElementById('clName') as HTMLInputElement | null;
@@ -1333,8 +1384,26 @@ async function renderClonePage(prefill?: { url?: string; name?: string; fromRemo
   const cancel = document.getElementById('clCancel');
   if (cancel) cancel.onclick = () => void renderRemotePage();
   n?.addEventListener('input', updateClonePreview);
-  (document.getElementById('clDest') as HTMLSelectElement | null)?.addEventListener('change', updateClonePreview);
   updateClonePreview();
+  void renderStagedSection();
+}
+
+// After a staged clone succeeds: the Project / Workspace / Discard choice, rendered in place of the
+// Clone button row.
+function renderPostCloneChoice(name: string) {
+  const row = document.querySelector('.brow');
+  if (!row) return;
+  row.innerHTML =
+    '<button class="btn primary" id="pcProject">Add as Project</button>' +
+    '<button class="btn" id="pcWorkspace">Add as Workspace</button>' +
+    '<button class="btn" id="pcDiscard">Discard</button>' +
+    '<span class="msg" id="clMsg"></span>';
+  $('pcProject').onclick = () => void addStagedFolder(name, 'project', 'clMsg');
+  $('pcWorkspace').onclick = () => void addStagedFolder(name, 'workspace', 'clMsg');
+  $('pcDiscard').onclick = () => void (async () => {
+    await exec('rm -rf ' + sh(SOURCES + '/' + name));
+    await renderClonePage();
+  })();
 }
 
 async function doClone(url0?: string, name0?: string) {
@@ -1343,13 +1412,17 @@ async function doClone(url0?: string, name0?: string) {
   const raw = (name0 || (document.getElementById('clName') as HTMLInputElement | null)?.value || '').trim() ||
     url.replace(/\/$/, '').replace(/\.git$/, '').split('/').pop() || 'repo';
   const name = sanitizeName(raw);
-  const dest = selectedDest();
+  const staging = await probeSources();
   const btn = document.getElementById('clBtn') as HTMLButtonElement | null;
   if (btn) btn.disabled = true;
   setMsg('clMsg', 'Cloning…');
-  const wd = dest.guestPath;
-  const target = dest.guestPath.replace(/\/+$/, '') + '/' + name;
+  const wd = staging ? SOURCES : '/workspace';
+  const target = wd + '/' + name;
   const tmp = '/root/.jcode-clone-' + name;
+  // When staging, the tree is assembled at a dot-named sibling and mv'd into place last (same-fs
+  // rename), so a crash mid-copy never leaves a half-populated dir the staged list would offer as a
+  // healthy clone (it lists non-dot dirs only).
+  const stage = SOURCES + '/.stage-' + name;
   const exists = out(await exec('test -e ' + sh(target) + ' && echo yes', { workdir: wd })).trim();
   if (exists === 'yes') { if (btn) btn.disabled = false; setMsg('clMsg', "A folder named '" + name + "' already exists.", true); return; }
   // Clone into a guest-home temp dir first, dereference proot --link2symlink pack symlinks (stat()
@@ -1358,21 +1431,32 @@ async function doClone(url0?: string, name0?: string) {
   const deref = 'find ' + sh(tmp) + ' -type l 2>/dev/null | while IFS= read -r l; do ' +
     'if cat "$l" > "$l.deref" 2>/dev/null && [ -s "$l.deref" ]; then rm -f "$l"; mv "$l.deref" "$l"; ' +
     'else rm -f "$l.deref" "$l"; fi; done';
+  const finalize = staging
+    ? 'rm -rf ' + sh(stage) + ' && cp -r ' + sh(tmp) + ' ' + sh(stage) + ' && rm -rf ' + sh(tmp) + ' && mv ' + sh(stage) + ' ' + sh(target)
+    : 'cp -r ' + sh(tmp) + ' ' + sh(target) + ' && rm -rf ' + sh(tmp);
   const cmd = 'rm -rf ' + sh(tmp) + ' && ' + GITP + 'clone --progress ' + sh(url) + ' ' + sh(tmp) + ' && ' +
     '{ find ' + sh(tmp) + " -name '.l2s.tmp_*' -delete 2>/dev/null; " + deref + '; ' +
     'find ' + sh(tmp) + " -name '.l2s.*' -delete 2>/dev/null; find " + sh(tmp) + ' -xtype l -delete 2>/dev/null; ' +
-    'cp -r ' + sh(tmp) + ' ' + sh(target) + ' && rm -rf ' + sh(tmp) + '; }';
+    finalize + '; }';
   const r = await exec(cmd, { workdir: wd, timeoutMs: 600000 });
   if (btn) btn.disabled = false;
   const log = document.getElementById('clLog');
   if (log) { log.style.display = 'block'; log.textContent = out(r); }
   if (r.exitCode !== 0) {
     setMsg('clMsg', 'Clone failed.', true);
-    await exec('rm -rf ' + sh(tmp) + ' ' + sh(target), { workdir: wd });
+    await exec('rm -rf ' + sh(tmp) + ' ' + sh(stage) + ' ' + sh(target), { workdir: wd });
     return;
   }
-  setMsg('clMsg', 'Cloned — opening…');
-  await api('workbench.openFolder', { name, destinationId: dest.id });
+  if (staging) {
+    setMsg('clMsg', "Cloned '" + name + "'.");
+    renderPostCloneChoice(name);
+  } else {
+    // Older host without /sources: the clone physically sits in /workspace (the Default Workspace's
+    // projects root), so the registration must target it explicitly — a blank destinationId would
+    // register a phantom folder under whatever workspace happens to be open.
+    setMsg('clMsg', 'Cloned — opening…');
+    await api('workbench.openFolder', { name, destinationId: 'default' });
+  }
 }
 
 let rrRepos: any[] = [];
