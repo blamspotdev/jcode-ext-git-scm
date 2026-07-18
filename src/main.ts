@@ -83,7 +83,11 @@ async function exec(cmd: string, opts: { workdir?: string | null; timeoutMs?: nu
   return r.data as ExecResult;
 }
 // Every git runs with safe.directory='*' (root may not own the files) and quotePath off (verbatim paths).
-const GITP = "git -c safe.directory='*' -c core.quotePath=false ";
+// core.createObject=rename: git finalizes objects/packs with link()+unlink(), which proot's
+// --link2symlink emulates as a symlink onto an `.l2s.*` backing file — the clone pipeline's cleanup
+// then destroyed the object store (fatal: bad object HEAD on every pack-transferred clone). rename()
+// produces plain files, so no git write (clone, commit, gc) ever leaves l2s artifacts.
+const GITP = "git -c safe.directory='*' -c core.quotePath=false -c core.createObject=rename ";
 const rawGit = (workdir: string, args: string, t?: number) => exec(GITP + args, { workdir, timeoutMs: t });
 const git = (args: string, t?: number) => exec(GITP + args, { workdir: repo, timeoutMs: t });
 
@@ -1268,29 +1272,34 @@ function escapeHtml(s: string) { return s.replace(/[&<>]/g, (c) => ({ '&': '&amp
 function escapeAttr(s: string) { return s.replace(/"/g, '&quot;'); }
 
 // ---- Clone repo + Remote repo browser (opened in the editor via workbench.openView #clone / #remoteRepo) ----
-// Must match WorkspaceManager.sanitizedFolderName so the clone target lines up with what the app registers.
+// Must match WorkspaceManager.sanitizedFolderName so the clone target lines up with what the app
+// registers. Additionally strips leading dots: workbench.addFolder refuses dot-named staged folders
+// (and `ls`/hidden-file conventions would hide them), so a repo like ".dotfiles" stages as "dotfiles".
 function sanitizeName(s: string): string {
-  return (s || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'project';
+  return (s || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[.-]+|-+$/g, '') || 'project';
 }
 
-// Destinations the host offers for a clone (the Default "Projects" root + any user Workspace),
-// fetched from workbench.cloneDestinations. `guestPath` is where the clone is physically placed;
-// `id` is passed back to workbench.openFolder so the host registers the project in that workspace.
-interface CloneDest { id: string; label: string; guestPath: string }
-const DEFAULT_DEST: CloneDest = { id: 'default', label: 'Projects', guestPath: '/workspace' };
-let clDests: CloneDest[] = [DEFAULT_DEST];
+// The whole clone flow lives in this extension; the app only provides infrastructure. Current hosts
+// bind an ext4 staging dir at guest /sources and expose the generic workbench.addFolder bridge. The
+// user picks Project / Workspace (or cancels) BEFORE the clone starts; the clone then lands in
+// /sources only as a mechanical stopover and is adopted the moment it finishes — a repo shipping its
+// own .jcode type keeps what it declares, the upfront pick covers repos that declare nothing. So
+// nothing user-visible ever lives in /sources, and leftovers from interrupted sessions are swept,
+// not surfaced. Older hosts have neither mount nor bridge: probed once via the mount's existence,
+// the clone then lands directly in /workspace and is registered through the legacy
+// workbench.openFolder, matching the pre-staging behavior.
+const SOURCES = '/sources';
+let sourcesSupported: boolean | null = null;
 
-async function loadCloneDestinations() {
-  const r = await api('workbench.cloneDestinations');
-  const list = r && r.ok && r.data && Array.isArray((r.data as any).destinations)
-    ? ((r.data as any).destinations as CloneDest[]).filter((d) => d && d.id && d.guestPath)
-    : [];
-  clDests = list.length ? list : [DEFAULT_DEST];
-}
-
-function selectedDest(): CloneDest {
-  const sel = document.getElementById('clDest') as HTMLSelectElement | null;
-  return clDests.find((d) => d.id === (sel?.value || '')) || clDests[0] || DEFAULT_DEST;
+async function probeSources(): Promise<boolean> {
+  if (sourcesSupported === null) {
+    // Cache only a definitive yes/no — a transient exec failure (runtime still booting) must not
+    // permanently route a staging-capable host down the legacy path.
+    const t = out(await exec('test -d ' + SOURCES + ' && echo yes || echo no')).trim();
+    if (t === 'yes' || t === 'no') sourcesSupported = t === 'yes';
+    else return false;
+  }
+  return sourcesSupported;
 }
 
 function updateClonePreview() {
@@ -1298,38 +1307,163 @@ function updateClonePreview() {
   if (!el) return;
   const raw = (document.getElementById('clName') as HTMLInputElement | null)?.value || '';
   const name = raw.trim() ? sanitizeName(raw) : '…';
-  el.textContent = 'Clones into ' + selectedDest().label + ' / ' + name;
+  el.textContent = 'Clones into ' + (sourcesSupported ? SOURCES : '/workspace') + '/' + name;
+}
+
+// Folder-name auto-fill: a valid web URL fills the name field with its repo segment (last path
+// piece, .git stripped — the same default the clone itself would use). A name the user typed is
+// never overwritten: the field is only auto-owned while empty or still holding the last auto-fill.
+let lastAutoName = '';
+
+function nameFromUrl(url: string): string {
+  const parts = url.replace(/^https?:\/\//, '').replace(/\/+$/, '').split('/');
+  if (parts.length < 2) return '';
+  return (parts.pop() || '').replace(/\.git$/, '');
+}
+
+function autofillName() {
+  const url = ((document.getElementById('clUrl') as HTMLInputElement | null)?.value || '').trim();
+  const n = document.getElementById('clName') as HTMLInputElement | null;
+  if (!n) return;
+  const current = n.value.trim();
+  if (current !== '' && current !== lastAutoName) return;
+  const next = /^https?:\/\/\S+$/.test(url) ? nameFromUrl(url) : '';
+  n.value = next;
+  lastAutoName = next;
+  updateClonePreview();
+}
+
+// Live peek at the repo before cloning: for a valid web URL, a commits-only shallow fetch (bare,
+// depth 6, tree:0 filter — servers without partial-clone support just ignore the filter) shows the
+// last 6 commits at the bottom of the page, styled like the SCM panel's history. Debounced while
+// typing, superseded fetches are dropped, and any failure hides the section — the peek never blocks
+// or gates cloning.
+let peekSeq = 0;
+let peekTimer: number | undefined;
+let peekShownFor = '';
+
+function schedulePeek() {
+  if (peekTimer !== undefined) clearTimeout(peekTimer);
+  peekTimer = window.setTimeout(() => void peekCommits(), 700);
+}
+
+async function peekCommits() {
+  const holder = document.getElementById('clPeek');
+  if (!holder) return;
+  const url = ((document.getElementById('clUrl') as HTMLInputElement | null)?.value || '').trim();
+  const seq = ++peekSeq;
+  if (!/^https?:\/\/\S+$/.test(url)) { peekShownFor = ''; holder.innerHTML = ''; return; }
+  if (url === peekShownFor) return;
+  holder.innerHTML = '<div class="card" style="margin-top:10px"><div class="muted" style="font-size:12.5px">Loading latest commits…</div></div>';
+  const tmp = '/root/.jcode-peek';
+  const cmd = 'rm -rf ' + sh(tmp) + ' && ' + GITP + 'clone -q --bare --depth 6 --filter=tree:0 --no-tags ' +
+    sh(url) + ' ' + sh(tmp) + ' && ' + GITP + '--git-dir=' + sh(tmp) +
+    " log -n 6 --pretty=format:'%h%x1f%an%x1f%ar%x1f%s'; rm -rf " + sh(tmp);
+  const r = await exec(cmd, { timeoutMs: 60000 });
+  if (seq !== peekSeq) return;
+  const cur = document.getElementById('clPeek');
+  if (!cur) return;
+  const lines = r.exitCode === 0 ? out(r).split('\n').filter((l) => l.includes('\x1f')) : [];
+  if (!lines.length) { peekShownFor = ''; cur.innerHTML = ''; return; }
+  peekShownFor = url;
+  cur.innerHTML =
+    '<div class="card" style="margin-top:10px"><h3 style="margin:0 0 4px">Latest commits</h3>' +
+    lines.slice(0, 6).map((line) => {
+      const p = line.split('\x1f');
+      return '<div class="crow"><div class="cline"><span class="chash">' + escapeHtml(p[0] || '') + '</span>' +
+        '<span class="csubj">' + escapeHtml(p[3] || '') + '</span></div>' +
+        '<div class="cmeta">' + escapeHtml((p[1] || '') + ' · ' + (p[2] || '')) + '</div></div>';
+    }).join('') + '</div>';
+}
+
+// Hand a staged folder to the host, which moves it out of /sources and opens it. Passing no `type`
+// lets the host adopt the folder as whatever its own `.jcode` declares — a repo that ships one
+// already knows what it is. The host answers `needsType` when the folder declares nothing, and the
+// caller then retries with the type the user picked before the clone.
+type AddOutcome = 'added' | 'needsType' | 'failed';
+
+async function addStagedFolder(name: string, type: string, msgId: string): Promise<AddOutcome> {
+  setBusy(true);
+  setMsg(msgId, 'Adding…');
+  try {
+    const payload: Record<string, string> = { path: SOURCES + '/' + name };
+    if (type) payload.type = type;
+    const r = await api('workbench.addFolder', payload);
+    if (!r || !r.ok) {
+      setMsg(msgId, (r && (r as any).error) || 'Could not add the folder.', true);
+      return 'failed';
+    }
+    if ((r.data as any) && (r.data as any).needsType) return 'needsType';
+    const asWorkspace = !!((r.data as any) && (r.data as any).workspace);
+    setMsg(msgId, (asWorkspace ? "Workspace '" : "Opened '") + name + (asWorkspace ? "' opened." : "'."));
+    return 'added';
+  } finally {
+    setBusy(false);
+  }
+}
+
+// The clone is in the workbench now, so this page has done its job — close the tab it was opened as
+// (#clone or #remoteRepo). Hosts without the verb answer not-ok, which is a harmless no-op.
+async function closeSelf() {
+  await api('workbench.closeView', { view: VIEW });
 }
 
 // Renders the clone form. When opened from the Remote-repo browser (via cloneRemoteRepo) the URL and
 // name are pre-filled and a Cancel returns to the list — the clone only runs when the user taps Clone.
 async function renderClonePage(prefill?: { url?: string; name?: string; fromRemote?: boolean }) {
   document.body.className = 'authpage';
-  await loadCloneDestinations();
-  const opts = clDests.map((d) => '<option value="' + escapeAttr(d.id) + '">' + escapeHtml(d.label) + '</option>').join('');
+  const staging = await probeSources();
+  // Nothing legitimate lives in /sources between clones — adoption happens the moment a clone
+  // finishes — so quietly sweep leftovers from interrupted sessions instead of surfacing them.
+  if (staging) void exec('find ' + SOURCES + ' -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null');
   document.body.innerHTML =
     '<div class="page">' +
     '<div class="page-hd">' + OCTOCAT + '<div><h1>Clone a repository</h1><div class="sub">Clone a Git repository into a new project</div></div></div>' +
     '<div class="card">' +
     '<div class="frow"><label>Repository URL</label><input id="clUrl" placeholder="https://github.com/owner/repo.git" autocapitalize="none" autocorrect="off" spellcheck="false"></div>' +
     '<div class="frow"><label>Folder name</label><input id="clName" placeholder="(optional — taken from the URL)"></div>' +
-    '<div class="frow"><label>Destination</label><select id="clDest">' + opts + '</select></div>' +
     '<div class="cl-preview" id="clPreview"></div>' +
     '<div class="brow"><button id="clBtn" class="btn primary">Clone</button>' +
     (prefill && prefill.fromRemote ? '<button id="clCancel" class="btn">Cancel</button>' : '') +
     '<span class="msg" id="clMsg"></span></div>' +
     '<pre class="modal-log" id="clLog" style="display:none;margin-top:10px"></pre>' +
-    '</div></div>';
+    '</div><div id="clPeek"></div></div>';
   const u = document.getElementById('clUrl') as HTMLInputElement | null;
   if (u && prefill && prefill.url) u.value = prefill.url;
   const n = document.getElementById('clName') as HTMLInputElement | null;
   if (n && prefill && prefill.name) n.value = prefill.name;
+  // A prefilled name (Remote Repo flow) counts as auto-filled, so later URL edits keep updating it.
+  lastAutoName = n?.value.trim() || '';
   $('clBtn').onclick = () => void doClone();
   const cancel = document.getElementById('clCancel');
   if (cancel) cancel.onclick = () => void renderRemotePage();
   n?.addEventListener('input', updateClonePreview);
-  (document.getElementById('clDest') as HTMLSelectElement | null)?.addEventListener('change', updateClonePreview);
+  u?.addEventListener('input', () => { autofillName(); schedulePeek(); });
+  autofillName();
   updateClonePreview();
+  schedulePeek();
+}
+
+// Ask BEFORE anything is downloaded how the repo should open; Cancel (or the scrim) clones nothing.
+// Same modal vocabulary as the branch/commit confirms. A repo that ships its own .jcode type keeps
+// what it declares — the pick only decides for repos that declare nothing.
+function askCloneIntent(name: string, onChoice: (type: string) => void) {
+  const back = document.createElement('div'); back.className = 'modal-scrim';
+  const dlg = document.createElement('div'); dlg.className = 'modal';
+  dlg.innerHTML =
+    '<div class="modal-title">Clone &#8216;' + escapeHtml(name) + '&#8217;</div>' +
+    '<div class="modal-body">Add <b>' + escapeHtml(name) + '</b> as a project, or open it as a ' +
+    'workspace — its top-level folders become projects.</div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn ghost" id="__ciCancel">Cancel</button>' +
+    '<button class="btn ghost" id="__ciWorkspace">Open as Workspace</button>' +
+    '<button class="btn primary" id="__ciProject">Add as Project</button></div>';
+  back.appendChild(dlg); document.body.appendChild(back);
+  const close = () => back.remove();
+  document.getElementById('__ciCancel')!.onclick = close;
+  back.onclick = (e) => { if (e.target === back) close(); };
+  document.getElementById('__ciProject')!.onclick = () => { close(); onChoice('project'); };
+  document.getElementById('__ciWorkspace')!.onclick = () => { close(); onChoice('workspace'); };
 }
 
 async function doClone(url0?: string, name0?: string) {
@@ -1338,23 +1472,72 @@ async function doClone(url0?: string, name0?: string) {
   const raw = (name0 || (document.getElementById('clName') as HTMLInputElement | null)?.value || '').trim() ||
     url.replace(/\/$/, '').replace(/\.git$/, '').split('/').pop() || 'repo';
   const name = sanitizeName(raw);
-  const dest = selectedDest();
+  if (await probeSources()) askCloneIntent(name, (type) => void runStagedClone(url, name, type));
+  else await runLegacyClone(url, name);
+}
+
+// Clone into /sources and adopt immediately: first ask the host to take the folder as whatever its
+// own .jcode declares; when it declares nothing, retry with the type the user picked up front.
+async function runStagedClone(url: string, name: string, type: string) {
   const btn = document.getElementById('clBtn') as HTMLButtonElement | null;
   if (btn) btn.disabled = true;
   setMsg('clMsg', 'Cloning…');
-  const wd = dest.guestPath;
-  const target = dest.guestPath.replace(/\/+$/, '') + '/' + name;
+  const target = SOURCES + '/' + name;
+  const tmp = '/root/.jcode-clone-' + name;
+  // The tree is assembled at a dot-named sibling and mv'd into place last (same-fs rename), so a
+  // crash mid-copy never leaves a half-populated dir where the finished clone should appear.
+  const stage = SOURCES + '/.stage-' + name;
+  // Clone into a guest-home temp dir first, dereference proot --link2symlink pack symlinks (stat()
+  // gives EPERM but open()/cat still reads them) into regular files, then copy the symlink-free tree
+  // to the destination so the host can read every file (e.g. from the Explorer/DocumentsProvider).
+  // /sources holds nothing worth keeping, so a stale same-named leftover is cleared, not an error.
+  const deref = 'find ' + sh(tmp) + ' -type l 2>/dev/null | while IFS= read -r l; do ' +
+    'if cat "$l" > "$l.deref" 2>/dev/null && [ -s "$l.deref" ]; then rm -f "$l"; mv "$l.deref" "$l"; ' +
+    'else rm -f "$l.deref" "$l"; fi; done';
+  const finalize = 'rm -rf ' + sh(stage) + ' && cp -r ' + sh(tmp) + ' ' + sh(stage) +
+    ' && rm -rf ' + sh(tmp) + ' && mv ' + sh(stage) + ' ' + sh(target);
+  // Deref FIRST, delete `.l2s.*` after: the backing files are named `.l2s.<original>` and deleting
+  // them before the deref materializes the symlinks orphans (then deletes) whatever they carried —
+  // that ordering destroyed every pack-transferred clone's object store.
+  const cmd = 'rm -rf ' + sh(tmp) + ' ' + sh(target) + ' && ' + GITP + 'clone --progress ' + sh(url) + ' ' + sh(tmp) + ' && ' +
+    '{ ' + deref + '; ' +
+    'find ' + sh(tmp) + " -name '.l2s.*' -delete 2>/dev/null; find " + sh(tmp) + ' -xtype l -delete 2>/dev/null; ' +
+    finalize + '; }';
+  const r = await exec(cmd, { workdir: SOURCES, timeoutMs: 600000 });
+  if (btn) btn.disabled = false;
+  const log = document.getElementById('clLog');
+  if (log) { log.style.display = 'block'; log.textContent = out(r); }
+  if (r.exitCode !== 0) {
+    setMsg('clMsg', 'Clone failed.', true);
+    await exec('rm -rf ' + sh(tmp) + ' ' + sh(stage) + ' ' + sh(target));
+    return;
+  }
+  let outcome = await addStagedFolder(name, '', 'clMsg');
+  if (outcome === 'needsType') outcome = await addStagedFolder(name, type, 'clMsg');
+  if (outcome === 'added') await closeSelf();
+  // Adoption failed (the host's error is on screen): remove the clone rather than leave an
+  // unusable copy behind — cloning again after resolving is the retry path.
+  else await exec('rm -rf ' + sh(target));
+}
+
+// Older host without /sources: the clone lands directly in /workspace (the Default Workspace's
+// projects root), so the registration targets it explicitly — a blank destinationId would register
+// a phantom folder under whatever workspace happens to be open. No upfront ask: this host's
+// openFolder only registers projects.
+async function runLegacyClone(url: string, name: string) {
+  const btn = document.getElementById('clBtn') as HTMLButtonElement | null;
+  if (btn) btn.disabled = true;
+  setMsg('clMsg', 'Cloning…');
+  const wd = '/workspace';
+  const target = wd + '/' + name;
   const tmp = '/root/.jcode-clone-' + name;
   const exists = out(await exec('test -e ' + sh(target) + ' && echo yes', { workdir: wd })).trim();
   if (exists === 'yes') { if (btn) btn.disabled = false; setMsg('clMsg', "A folder named '" + name + "' already exists.", true); return; }
-  // Clone onto ext4 (index-pack can't write a pack to the external-storage /workspace mount), then
-  // dereference proot --link2symlink pack symlinks (stat() gives EPERM but open()/cat still reads them)
-  // into regular files, and copy the symlink-free tree into /workspace.
   const deref = 'find ' + sh(tmp) + ' -type l 2>/dev/null | while IFS= read -r l; do ' +
     'if cat "$l" > "$l.deref" 2>/dev/null && [ -s "$l.deref" ]; then rm -f "$l"; mv "$l.deref" "$l"; ' +
     'else rm -f "$l.deref" "$l"; fi; done';
   const cmd = 'rm -rf ' + sh(tmp) + ' && ' + GITP + 'clone --progress ' + sh(url) + ' ' + sh(tmp) + ' && ' +
-    '{ find ' + sh(tmp) + " -name '.l2s.tmp_*' -delete 2>/dev/null; " + deref + '; ' +
+    '{ ' + deref + '; ' +
     'find ' + sh(tmp) + " -name '.l2s.*' -delete 2>/dev/null; find " + sh(tmp) + ' -xtype l -delete 2>/dev/null; ' +
     'cp -r ' + sh(tmp) + ' ' + sh(target) + ' && rm -rf ' + sh(tmp) + '; }';
   const r = await exec(cmd, { workdir: wd, timeoutMs: 600000 });
@@ -1367,7 +1550,8 @@ async function doClone(url0?: string, name0?: string) {
     return;
   }
   setMsg('clMsg', 'Cloned — opening…');
-  await api('workbench.openFolder', { name, destinationId: dest.id });
+  await api('workbench.openFolder', { name, destinationId: 'default' });
+  await closeSelf();
 }
 
 let rrRepos: any[] = [];
