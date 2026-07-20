@@ -771,7 +771,24 @@ function createBranch() {
 // Fetch is a passive sync — succeed silently (any incoming commits surface via the ahead/behind badge);
 // run() already surfaces errors.
 const fetch_ = () => run(() => git('fetch --all --prune', 120000), async () => { await refreshStatus(); await refreshBranches(); });
-const pull = () => run(() => git('pull', 180000), async (_r, t) => { logShow(t || 'Up to date.'); await refreshStatus(); await refreshBranches(); });
+// A plain `git pull` aborts when uncommitted local changes would be overwritten by the incoming
+// merge/rebase (leaving the user stuck on the raw git error). Detect that and offer to stash-pull-reapply
+// via `--autostash`, so incoming changes land without losing local work; if the re-apply conflicts the
+// files surface in "Merge Changes" like any other conflict.
+const PULL_DIRTY_RE = /would be overwritten|commit your changes or stash them|cannot pull with rebase|you have unstaged changes|not uptodate/i;
+const pullAutostash = () => run(() => git('pull --autostash', 180000), async (_r, t) => { logShow(t || 'Up to date.'); await refreshStatus(); await refreshBranches(); });
+const pull = () => run(() => git('pull', 180000), async (r, t) => {
+  if (r.exitCode !== 0 && PULL_DIRTY_RE.test(t)) {
+    showModal({
+      title: 'Uncommitted changes',
+      body: 'Local changes would be overwritten by the incoming update. Stash them, pull, then re-apply your changes on top?',
+      confirmLabel: 'Stash &amp; Pull',
+      onConfirm: () => { void pullAutostash(); },
+    });
+    return;
+  }
+  logShow(t || 'Up to date.'); await refreshStatus(); await refreshBranches();
+});
 async function push() {
   await run(() => git('push', 180000), async (r, text) => {
     if (r.exitCode === 0) { logShow(text || 'Pushed.'); await refreshStatus(); return; }
