@@ -55,6 +55,18 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent)}
 
 .notice{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin:8px;color:var(--muted);line-height:1.55}
 .notice b{color:var(--fg)}
+
+/* Compact centered empty state (no project / no git / no repo). Fills the panel and centers, so it
+   reads as intentional rather than a sparse text block; the header chrome is hidden behind it. */
+.estate{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  text-align:center;gap:10px;padding:24px;color:var(--muted)}
+.estate .eic{width:48px;height:48px;border-radius:14px;display:flex;align-items:center;justify-content:center;
+  background:color-mix(in srgb, var(--accent) 14%, transparent);color:var(--accent)}
+.estate .eic svg{width:24px;height:24px}
+.estate .et{font-size:14px;font-weight:600;color:var(--fg)}
+.estate .em{font-size:12.5px;line-height:1.5;max-width:280px}
+.estate .em b{color:var(--fg)}
+.estate .btn{margin-top:4px}
 .btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:7px;font-weight:600;font-size:12.5px}
 .btn.primary{background:var(--accent);color:var(--accent-ink)}
 .btn.primary:active{filter:brightness(.94)}

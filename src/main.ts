@@ -121,6 +121,20 @@ function setRepoActions(enabled: boolean) {
 function notice(html: string) { const n = $('notice'); n.innerHTML = html; n.classList.remove('hide'); $('main').classList.add('hide'); }
 function clearNotice() { $('notice').classList.add('hide'); }
 function showMain() { $('main').classList.remove('hide'); }
+// Compact centered empty state for the no-project / no-git / no-repo cases. The whole SCM panel is
+// owned by this extension, so it renders its own placeholder here; the toolbar chrome (branch, sync,
+// GitHub, refresh) is hidden behind it since none of it applies without a repo.
+function showEmpty(title: string, msg: string, actionsHtml = '') {
+  $('main').classList.add('hide');
+  $('notice').classList.add('hide');
+  $('repoBar').classList.add('hide');
+  document.querySelector('.hd')?.classList.add('hide');
+  const e = $('empty');
+  e.innerHTML = '<div class="eic">' + IC_SCM + '</div><div class="et">' + title + '</div>' +
+    '<div class="em">' + msg + '</div>' + actionsHtml;
+  e.classList.remove('hide');
+}
+function hideEmpty() { $('empty').classList.add('hide'); document.querySelector('.hd')?.classList.remove('hide'); }
 function setBusy(v: boolean) { busy = v; document.querySelectorAll<HTMLButtonElement>('button').forEach((b) => { if (!b.dataset.keep) b.disabled = v; }); if (!v) refreshCommitState(); }
 // A commit needs a message: keep the primary Commit button disabled until the message box is non-empty.
 // Re-applied after every setBusy(false), which otherwise re-enables all non-keep buttons regardless.
@@ -146,6 +160,7 @@ function openPop(pop: HTMLElement, anchor: HTMLElement) {
 }
 
 // ---- icons ----
+const IC_SCM = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6A2.5 2.5 0 0110 8.5H6a1 1 0 00-1 1v1.128a2.251 2.251 0 11-1.5 0V5.372a2.25 2.25 0 111.5 0v1.836A2.492 2.492 0 016 7h4a1 1 0 001-1v-.628A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z"/></svg>';
 const IC_STAGE = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M7.25 3.25a.75.75 0 011.5 0V7h3.75a.75.75 0 010 1.5H8.75v3.75a.75.75 0 01-1.5 0V8.5H3.5a.75.75 0 010-1.5h3.75V3.25z"/></svg>';
 const IC_UNSTAGE = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M3.5 7.25a.75.75 0 000 1.5h9a.75.75 0 000-1.5h-9z"/></svg>';
 const IC_DISCARD = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M4.28 3.22a.75.75 0 00-1.06 1.06L6.94 8l-3.72 3.72a.75.75 0 101.06 1.06L8 9.06l3.72 3.72a.75.75 0 101.06-1.06L9.06 8l3.72-3.72a.75.75 0 00-1.06-1.06L8 6.94 4.28 3.22z"/></svg>';
@@ -164,12 +179,14 @@ async function boot() {
   setRepoActions(false);
   const info = await api('workbench.projectInfo');
   projectPath = info.ok && info.data && info.data.path ? info.data.path : null;
-  if (!projectPath) { setBranch('no project'); notice('Open a project to use Source Control.'); return; }
+  if (!projectPath) { setBranch('no project'); showEmpty('Source Control', 'Open a folder to start managing changes with Git.'); return; }
 
   const g = await exec('command -v git >/dev/null 2>&1 && echo OK || echo NO', { workdir: projectPath });
   if (out(g).indexOf('OK') < 0) {
     setBranch('no git');
-    notice('Git isn’t installed in the runtime. Install it from <b>Toolchains → Git</b>, then Refresh.');
+    showEmpty('Git isn’t installed', 'Install Git from <b>Toolchains → Git</b>, then refresh.',
+      '<button id="egRefresh" class="btn ghost sm">Refresh</button>');
+    const rb = $<HTMLButtonElement>('egRefresh'); rb.dataset.keep = '1'; rb.onclick = () => void boot();
     return;
   }
 
@@ -177,14 +194,15 @@ async function boot() {
   if (!repos.length) {
     repo = projectPath;
     setBranch('no repo');
-    notice('This project isn’t a git repository yet.' +
-      '<div style="margin-top:10px"><button id="doInit" class="btn primary">Initialize repository</button></div>');
+    showEmpty('Not a repository', 'This folder isn’t a Git repository yet.',
+      '<button id="doInit" class="btn primary">Initialize repository</button>');
     const b = $<HTMLButtonElement>('doInit'); b.dataset.keep = '1'; b.onclick = doInit;
     return;
   }
   const remembered = localStorage.getItem('scm.activeRepo');
   repo = repos.find((r) => r.root === remembered)?.root ?? repos[0].root;
   await loadConfig();
+  hideEmpty();
   renderRepoBar();
   clearNotice();
   setRepoActions(true);
