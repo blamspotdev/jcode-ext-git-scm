@@ -689,15 +689,21 @@ function stashRow(s: StashEntry, index: number): HTMLElement {
 }
 // Stash all working-tree changes (staged + unstaged + untracked). Reuses the commit message box as
 // the stash message when it holds text.
-async function stashChanges() {
-  const box = $<HTMLTextAreaElement>('msg');
-  const msg = box.value.trim();
-  await run(() => git('stash push --include-untracked' + (msg ? ' -m ' + sh(msg) : '')), async (r, text) => {
-    if (r.exitCode !== 0) return;
-    if (msg) { box.value = ''; box.style.height = 'auto'; refreshCommitState(); }
-    logShow(text || 'Changes stashed.');
-    await refreshStatus();
-    await refreshStashes();
+function stashChanges() {
+  showModal({
+    title: 'Stash changes',
+    body: 'Save all working-tree changes (staged, unstaged and untracked) to a new stash.',
+    input: { value: '', placeholder: 'Message (optional)' },
+    confirmLabel: 'Stash',
+    onConfirm: (value) => {
+      const msg = (value || '').trim();
+      void run(() => git('stash push --include-untracked' + (msg ? ' -m ' + sh(msg) : '')), async (r, text) => {
+        if (r.exitCode !== 0) return;
+        logShow(text || 'Changes stashed.');
+        await refreshStatus();
+        await refreshStashes();
+      });
+    },
   });
 }
 // Applying/popping restores a stash onto the working tree (and can conflict with current changes),
@@ -1254,15 +1260,20 @@ function renderDiffInto(el: HTMLElement, text: string, path: string, openable = 
   const frag = document.createDocumentFragment();
   let newLine = 0;
   for (const line of text.replace(/\n$/, '').split('\n')) {
-    let kind = 'ctx', gutter = '', openLn = 0;
+    let kind = 'ctx', gutter = '', openLn = 0, fileHeader = '';
     const hm = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)/);
     if (hm) { kind = 'hunk'; newLine = parseInt(hm[1], 10); openLn = newLine; }
-    else if (/^(diff --git|index |new file|deleted file|old mode|new mode|similarity |rename |copy |--- |\+\+\+ |Binary )/.test(line)) { kind = 'meta'; }
+    else if (/^(diff --git|index |new file|deleted file|old mode|new mode|similarity |rename |copy |--- |\+\+\+ |Binary )/.test(line)) {
+      kind = 'meta';
+      const dm = line.match(/^diff --git a\/.+ b\/(.+)$/);
+      if (dm) fileHeader = dm[1];
+    }
     else if (line[0] === '+') { kind = 'add'; gutter = String(newLine); openLn = newLine; newLine++; }
     else if (line[0] === '-') { kind = 'del'; openLn = newLine; }
     else { gutter = String(newLine); openLn = newLine; newLine++; }
     const div = document.createElement('div');
     div.className = 'dl' + (kind === 'ctx' ? '' : ' ' + kind);
+    if (fileHeader) div.dataset.file = fileHeader;
     const g = document.createElement('span'); g.className = 'ln'; g.textContent = gutter;
     const c = document.createElement('span'); c.className = 'code'; c.textContent = line || ' ';
     div.appendChild(g); div.appendChild(c);
@@ -1295,11 +1306,45 @@ async function renderStashDiffPage() {
     '<div class="page pagewide">' +
     '<div class="page-hd">' + FILE_ICON +
     '<div style="flex:1;min-width:0"><h1 class="mono difftitle">' + escapeHtml(ref) + '</h1><div class="sub">Stashed changes</div></div></div>' +
+    '<div id="stashFiles" class="sfiles hide"></div>' +
     '<div id="diffBody" class="diffwrap"><div class="dempty">Loading diff…</div></div>' +
     '</div>';
   if (!repo) { document.getElementById('diffBody')!.innerHTML = '<div class="dempty">This project isn’t a git repository.</div>'; return; }
-  const r = await rawGit(repo, 'stash show -p --no-color ' + sh(ref), 60000);
-  renderDiffInto(document.getElementById('diffBody')!, out(r), '', false);
+  // git stash show omits untracked files unless --include-untracked (git 2.32+); fall back for older git.
+  let names = await rawGit(repo, 'stash show --name-status --include-untracked ' + sh(ref), 60000);
+  if (names.exitCode !== 0) names = await rawGit(repo, 'stash show --name-status ' + sh(ref), 60000);
+  const diffEl = document.getElementById('diffBody')!;
+  renderStashFiles(document.getElementById('stashFiles')!, out(names), diffEl);
+  let r = await rawGit(repo, 'stash show -p --include-untracked --no-color ' + sh(ref), 60000);
+  if (r.exitCode !== 0) r = await rawGit(repo, 'stash show -p --no-color ' + sh(ref), 60000);
+  renderDiffInto(diffEl, out(r), '', false);
+}
+
+// The files a stash touched (git stash show --name-status), listed above the inline diff. Tapping a row
+// scrolls its file section (tagged by renderDiffInto's data-file) into view.
+function renderStashFiles(el: HTMLElement, text: string, diffEl: HTMLElement) {
+  const files: { status: string; path: string }[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    const parts = line.split('\t');
+    const status = (parts[0] || '').trim();
+    const path = (status[0] === 'R' || status[0] === 'C') ? parts[parts.length - 1] : parts[1];
+    if (path) files.push({ status: status[0] === '?' ? 'A' : status[0], path });
+  }
+  el.innerHTML = '';
+  el.classList.toggle('hide', files.length === 0);
+  if (!files.length) return;
+  files.forEach((f) => {
+    const row = document.createElement('div'); row.className = 'sfile';
+    const st = document.createElement('span'); st.className = 'st ' + f.status; st.textContent = f.status;
+    const nm = document.createElement('span'); nm.className = 'sfname'; nm.textContent = f.path; nm.title = f.path;
+    row.appendChild(st); row.appendChild(nm);
+    row.onclick = () => {
+      const target = Array.from(diffEl.querySelectorAll<HTMLElement>('[data-file]')).find((d) => d.dataset.file === f.path);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+    el.appendChild(row);
+  });
 }
 
 // ---- merge conflict resolution: the "Merge Changes" list actions + the 3-way merge editor page ----
