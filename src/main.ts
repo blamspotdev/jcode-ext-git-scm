@@ -37,7 +37,7 @@ function api(type: string, payload?: unknown): Promise<ApiResult> {
   _onEvent(name: string, json: string) {
     // Only the sidebar surface reloads config; the #github/#manage/#diff editor pages replaced
     // document.body and no longer have the sidebar DOM (#viewToggle, lists), so loadConfig would throw.
-    if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW !== 'clone' && VIEW !== 'remoteRepo' && VIEW.indexOf('diff:') !== 0 && VIEW.indexOf('merge:') !== 0) {
+    if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW !== 'clone' && VIEW !== 'remoteRepo' && VIEW.indexOf('diff:') !== 0 && VIEW.indexOf('merge:') !== 0 && VIEW.indexOf('stash:') !== 0) {
       void loadConfig().then(renderLists);
     }
     // The sidebar surface (also booted headless by the app as the decorations host) reacts to disk
@@ -672,11 +672,11 @@ function stashRow(s: StashEntry, index: number): HTMLElement {
   const dir = document.createElement('span'); dir.className = 'dir'; dir.textContent = s.ref;
   nm.appendChild(base); nm.appendChild(dir);
   nm.title = s.ref + (s.desc ? ' — ' + s.desc : '');
-  nm.onclick = () => void showStashDiff(s);
+  nm.onclick = () => openStashDiff(s);
   const fa = document.createElement('div'); fa.className = 'fa';
   const actions: Action[] = [
-    { icon: IC_APPLY, title: 'Apply (keep in stash list)', fn: () => void stashApply(s.ref) },
-    { icon: IC_POP, title: 'Pop (apply and remove)', fn: () => void stashPop(s.ref) },
+    { icon: IC_APPLY, title: 'Apply (keep in stash list)', fn: () => stashApply(s) },
+    { icon: IC_POP, title: 'Pop (apply and remove)', fn: () => stashPop(s) },
     { icon: IC_DISCARD, title: 'Drop (delete stash)', fn: () => stashDrop(s) },
   ];
   actions.forEach((a) => {
@@ -700,9 +700,27 @@ async function stashChanges() {
     await refreshStashes();
   });
 }
-const stashApply = (ref: string) => run(() => git('stash apply ' + sh(ref)), async () => { await refreshStatus(); await refreshBranches(); });
-const stashPop = (ref: string) => run(() => git('stash pop ' + sh(ref)), async () => { await refreshStatus(); await refreshStashes(); await refreshBranches(); });
-function popLatestStash() { if (lastStashes.length) void stashPop(lastStashes[0].ref); }
+// Applying/popping restores a stash onto the working tree (and can conflict with current changes),
+// so confirm first. Apply keeps the stash; Pop applies then removes it.
+function stashApply(s: StashEntry) {
+  showModal({
+    title: 'Apply stash',
+    body: 'Apply <b>' + escapeHtml(s.ref) + '</b>' + (s.desc ? ' — ' + escapeHtml(s.desc) : '') +
+      ' onto the working tree? It stays in the stash list.',
+    confirmLabel: 'Apply',
+    onConfirm: () => void run(() => git('stash apply ' + sh(s.ref)), async () => { await refreshStatus(); await refreshBranches(); }),
+  });
+}
+function stashPop(s: StashEntry) {
+  showModal({
+    title: 'Pop stash',
+    body: 'Apply <b>' + escapeHtml(s.ref) + '</b>' + (s.desc ? ' — ' + escapeHtml(s.desc) : '') +
+      ' onto the working tree and remove it from the stash list?',
+    confirmLabel: 'Pop',
+    onConfirm: () => void run(() => git('stash pop ' + sh(s.ref)), async () => { await refreshStatus(); await refreshStashes(); await refreshBranches(); }),
+  });
+}
+function popLatestStash() { if (lastStashes.length) stashPop(lastStashes[0]); }
 function stashDrop(s: StashEntry) {
   showModal({
     title: 'Drop stash',
@@ -711,9 +729,10 @@ function stashDrop(s: StashEntry) {
     onConfirm: () => void run(() => git('stash drop ' + sh(s.ref)), refreshStashes),
   });
 }
-async function showStashDiff(s: StashEntry) {
-  const r = await git('stash show -p ' + sh(s.ref), 60000);
-  logShow(out(r) || ('No diff for ' + s.ref));
+// Open a stash's full patch as a read-only diff in the editor area (its own #stash: view page).
+function openStashDiff(s: StashEntry) {
+  const r = repo ? encodeURIComponent(repo) : '';
+  void api('workbench.openView', { view: 'stash:' + r + ':' + encodeURIComponent(s.ref), title: s.ref + ' — stash' });
 }
 
 // Commit staged changes; returns true on success so the split-button variants can chain push/sync.
@@ -1229,7 +1248,7 @@ async function renderDiffPage() {
 
 // Render unified-diff text as colored rows with a new-file line-number gutter; clicking a row jumps to
 // that line in the real file. +added / -removed / @@ hunk / file-header meta.
-function renderDiffInto(el: HTMLElement, text: string, path: string) {
+function renderDiffInto(el: HTMLElement, text: string, path: string, openable = true) {
   if (!text.replace(/\s+$/, '')) { el.innerHTML = '<div class="dempty">No differences to show.</div>'; return; }
   el.innerHTML = '';
   const frag = document.createDocumentFragment();
@@ -1247,10 +1266,40 @@ function renderDiffInto(el: HTMLElement, text: string, path: string) {
     const g = document.createElement('span'); g.className = 'ln'; g.textContent = gutter;
     const c = document.createElement('span'); c.className = 'code'; c.textContent = line || ' ';
     div.appendChild(g); div.appendChild(c);
-    if (openLn > 0 && kind !== 'meta') { div.classList.add('tap'); div.title = 'Open at line ' + openLn; div.onclick = () => openFileAt(path, openLn); }
+    if (openable && openLn > 0 && kind !== 'meta') { div.classList.add('tap'); div.title = 'Open at line ' + openLn; div.onclick = () => openFileAt(path, openLn); }
     frag.appendChild(div);
   }
   el.appendChild(frag);
+}
+
+// A stash's full patch (git stash show -p) as a read-only diff page in the editor area. Opened via the
+// #stash:<repo>:<ref> view; the stash isn't in the working tree, so rows aren't click-to-open.
+async function renderStashDiffPage() {
+  const m = VIEW.match(/^stash:([^:]*):([\s\S]*)$/);
+  let ref = m ? m[2] : '';
+  try { ref = decodeURIComponent(ref); } catch { /* the hash was already decoded */ }
+  let hashRepo = '';
+  if (m && m[1]) { try { hashRepo = decodeURIComponent(m[1]); } catch { hashRepo = m[1]; } }
+  repo = hashRepo || localStorage.getItem('scm.activeRepo') || null;
+  if (!repo) {
+    const info = await api('workbench.projectInfo');
+    projectPath = info.ok && info.data && info.data.path ? info.data.path : null;
+    if (projectPath) {
+      const top = await rawGit(projectPath, 'rev-parse --show-toplevel 2>/dev/null');
+      const root = out(top).split('\n').filter(Boolean).pop() || '';
+      if (top.exitCode === 0 && root) repo = root;
+    }
+  }
+  document.body.className = 'authpage';
+  document.body.innerHTML =
+    '<div class="page pagewide">' +
+    '<div class="page-hd">' + FILE_ICON +
+    '<div style="flex:1;min-width:0"><h1 class="mono difftitle">' + escapeHtml(ref) + '</h1><div class="sub">Stashed changes</div></div></div>' +
+    '<div id="diffBody" class="diffwrap"><div class="dempty">Loading diff…</div></div>' +
+    '</div>';
+  if (!repo) { document.getElementById('diffBody')!.innerHTML = '<div class="dempty">This project isn’t a git repository.</div>'; return; }
+  const r = await rawGit(repo, 'stash show -p --no-color ' + sh(ref), 60000);
+  renderDiffInto(document.getElementById('diffBody')!, out(r), '', false);
 }
 
 // ---- merge conflict resolution: the "Merge Changes" list actions + the 3-way merge editor page ----
@@ -1747,6 +1796,8 @@ if (VIEW === 'github') {
   void renderMergePage();
 } else if (VIEW.indexOf('diff:') === 0) {
   void renderDiffPage();
+} else if (VIEW.indexOf('stash:') === 0) {
+  void renderStashDiffPage();
 } else {
   document.querySelectorAll<HTMLElement>('.sec-hd').forEach((h) => {
     h.addEventListener('click', (e) => { if ((e.target as HTMLElement).closest('.act')) return; $(h.dataset.sec!).classList.toggle('collapsed'); });
