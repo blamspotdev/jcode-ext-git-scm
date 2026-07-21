@@ -5,6 +5,7 @@ interface ApiResult { ok: boolean; data?: any; error?: string }
 interface ExecResult { stdout: string; stderr: string; exitCode: number; error?: string }
 interface FileEntry { code: string; path: string; display: string; untracked: boolean }
 interface RepoInfo { root: string; name: string }
+interface StashEntry { ref: string; desc: string }
 interface Action { icon: string; title: string; fn: () => void }
 type ViewMode = 'list' | 'tree';
 
@@ -71,6 +72,7 @@ let viewMode: ViewMode = 'list';
 let lastStaged: FileEntry[] = [];
 let lastUnstaged: FileEntry[] = [];
 let lastConflicts: FileEntry[] = [];
+let lastStashes: StashEntry[] = [];
 const collapsedFolders = new Set<string>();
 
 async function exec(cmd: string, opts: { workdir?: string | null; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<ExecResult> {
@@ -171,6 +173,8 @@ const IC_CHEV = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M6 4l4 4-
 const IC_OURS = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M10.53 3.47a.75.75 0 010 1.06L7.06 8l3.47 3.47a.75.75 0 11-1.06 1.06l-4-4a.75.75 0 010-1.06l4-4a.75.75 0 011.06 0z"/></svg>';
 const IC_THEIRS = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M5.47 3.47a.75.75 0 011.06 0l4 4a.75.75 0 010 1.06l-4 4a.75.75 0 01-1.06-1.06L8.94 8 5.47 4.53a.75.75 0 010-1.06z"/></svg>';
 const IC_RESOLVED = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M13.78 4.22a.75.75 0 010 1.06l-6.5 6.5a.75.75 0 01-1.06 0l-3-3a.75.75 0 111.06-1.06L6.75 10.19l5.97-5.97a.75.75 0 011.06 0z"/></svg>';
+const IC_APPLY = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M7.47 9.78a.75.75 0 001.06 0l2.25-2.25a.75.75 0 10-1.06-1.06l-.97.97V2.75a.75.75 0 00-1.5 0v4.69l-.97-.97a.75.75 0 00-1.06 1.06l2.25 2.25zM3.75 12.5a.75.75 0 000 1.5h8.5a.75.75 0 000-1.5h-8.5z"/></svg>';
+const IC_POP = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M8.53 5.22a.75.75 0 00-1.06 0L5.22 7.47a.75.75 0 001.06 1.06l.97-.97v4.69a.75.75 0 001.5 0V7.56l.97.97a.75.75 0 101.06-1.06L8.53 5.22zM3.75 2.5a.75.75 0 000 1.5h8.5a.75.75 0 000-1.5h-8.5z"/></svg>';
 
 // ---- boot / repo detection ----
 async function boot() {
@@ -354,7 +358,7 @@ async function addToGitignore(guestPath: string, isDirectory: boolean) {
 }
 
 async function doInit() { setBusy(true); const r = await git('init', 30000); if (out(r)) logShow(out(r)); setBusy(false); bootP = boot(); }
-async function refreshAll() { await Promise.all([refreshStatus(), refreshBranches(), refreshGh()]); }
+async function refreshAll() { await Promise.all([refreshStatus(), refreshBranches(), refreshStashes(), refreshGh()]); }
 
 // ---- config (Phase: generic extension settings; graceful fallback to localStorage) ----
 async function loadConfig() {
@@ -511,7 +515,7 @@ function renderLists() {
     { icon: IC_RESOLVED, title: 'Mark resolved', fn: () => markResolved(f.path) },
   ]);
   renderSection('stagedList', 'stagedCount', 'unstageAll', lastStaged, true, (f) => [{ icon: IC_UNSTAGE, title: 'Unstage', fn: () => unstage(f.path) }]);
-  renderSection('changeList', 'changeCount', ['stageAll', 'discardAll'], lastUnstaged, false, (f) => [
+  renderSection('changeList', 'changeCount', ['stageAll', 'discardAll', 'stashChanges'], lastUnstaged, false, (f) => [
     { icon: IC_DISCARD, title: 'Discard', fn: () => discard(f) },
     { icon: IC_STAGE, title: 'Stage', fn: () => stage(f.path) },
   ]);
@@ -638,6 +642,79 @@ const discardAll = () => {
     onConfirm: discardAllRun,
   });
 };
+
+// ---- stash ----
+async function refreshStashes() {
+  if (!repo) { lastStashes = []; renderStashes(); return; }
+  const r = await git("stash list --format='%gd%x1f%s'");
+  lastStashes = (r.exitCode === 0 ? out(r) : '').split('\n').filter(Boolean).map((line) => {
+    const i = line.indexOf('\x1f');
+    return i < 0 ? { ref: line.trim(), desc: '' } : { ref: line.slice(0, i).trim(), desc: line.slice(i + 1) };
+  });
+  renderStashes();
+}
+function renderStashes() {
+  $('stashSec').classList.toggle('hide', lastStashes.length === 0);
+  $('stashCount').textContent = String(lastStashes.length);
+  $('stashPopLatest').classList.toggle('hide', lastStashes.length === 0);
+  const el = $('stashList');
+  el.innerHTML = '';
+  lastStashes.forEach((s, i) => el.appendChild(stashRow(s, i)));
+}
+function stashRow(s: StashEntry, index: number): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'file';
+  const st = document.createElement('span');
+  st.className = 'st R'; st.textContent = String(index);
+  const nm = document.createElement('div');
+  nm.className = 'nm tapdiff';
+  const base = document.createElement('span'); base.className = 'base'; base.textContent = s.desc || s.ref;
+  const dir = document.createElement('span'); dir.className = 'dir'; dir.textContent = s.ref;
+  nm.appendChild(base); nm.appendChild(dir);
+  nm.title = s.ref + (s.desc ? ' — ' + s.desc : '');
+  nm.onclick = () => void showStashDiff(s);
+  const fa = document.createElement('div'); fa.className = 'fa';
+  const actions: Action[] = [
+    { icon: IC_APPLY, title: 'Apply (keep in stash list)', fn: () => void stashApply(s.ref) },
+    { icon: IC_POP, title: 'Pop (apply and remove)', fn: () => void stashPop(s.ref) },
+    { icon: IC_DISCARD, title: 'Drop (delete stash)', fn: () => stashDrop(s) },
+  ];
+  actions.forEach((a) => {
+    const btn = document.createElement('button');
+    btn.className = 'ic'; btn.title = a.title; btn.innerHTML = a.icon; btn.onclick = a.fn;
+    fa.appendChild(btn);
+  });
+  row.appendChild(st); row.appendChild(nm); row.appendChild(fa);
+  return row;
+}
+// Stash all working-tree changes (staged + unstaged + untracked). Reuses the commit message box as
+// the stash message when it holds text.
+async function stashChanges() {
+  const box = $<HTMLTextAreaElement>('msg');
+  const msg = box.value.trim();
+  await run(() => git('stash push --include-untracked' + (msg ? ' -m ' + sh(msg) : '')), async (r, text) => {
+    if (r.exitCode !== 0) return;
+    if (msg) { box.value = ''; box.style.height = 'auto'; refreshCommitState(); }
+    logShow(text || 'Changes stashed.');
+    await refreshStatus();
+    await refreshStashes();
+  });
+}
+const stashApply = (ref: string) => run(() => git('stash apply ' + sh(ref)), async () => { await refreshStatus(); await refreshBranches(); });
+const stashPop = (ref: string) => run(() => git('stash pop ' + sh(ref)), async () => { await refreshStatus(); await refreshStashes(); await refreshBranches(); });
+function popLatestStash() { if (lastStashes.length) void stashPop(lastStashes[0].ref); }
+function stashDrop(s: StashEntry) {
+  showModal({
+    title: 'Drop stash',
+    body: 'Delete <b>' + escapeHtml(s.ref) + '</b>' + (s.desc ? ' — ' + escapeHtml(s.desc) : '') + '? This can’t be undone.',
+    confirmLabel: 'Drop', danger: true,
+    onConfirm: () => void run(() => git('stash drop ' + sh(s.ref)), refreshStashes),
+  });
+}
+async function showStashDiff(s: StashEntry) {
+  const r = await git('stash show -p ' + sh(s.ref), 60000);
+  logShow(out(r) || ('No diff for ' + s.ref));
+}
 
 // Commit staged changes; returns true on success so the split-button variants can chain push/sync.
 // amend re-commits into HEAD (keeps the old message when the box is empty, else rewrites it).
@@ -1686,6 +1763,8 @@ if (VIEW === 'github') {
   $('stageAll').onclick = stageAll;
   $('unstageAll').onclick = unstageAll;
   $('discardAll').onclick = discardAll;
+  $('stashChanges').onclick = stashChanges;
+  $('stashPopLatest').onclick = popLatestStash;
   $('saveId').onclick = saveIdentity;
   $('fetch').onclick = fetch_;
   $('pull').onclick = pull;
