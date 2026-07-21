@@ -5,6 +5,7 @@ interface ApiResult { ok: boolean; data?: any; error?: string }
 interface ExecResult { stdout: string; stderr: string; exitCode: number; error?: string }
 interface FileEntry { code: string; path: string; display: string; untracked: boolean }
 interface RepoInfo { root: string; name: string }
+interface StashEntry { ref: string; desc: string }
 interface Action { icon: string; title: string; fn: () => void }
 type ViewMode = 'list' | 'tree';
 
@@ -36,7 +37,7 @@ function api(type: string, payload?: unknown): Promise<ApiResult> {
   _onEvent(name: string, json: string) {
     // Only the sidebar surface reloads config; the #github/#manage/#diff editor pages replaced
     // document.body and no longer have the sidebar DOM (#viewToggle, lists), so loadConfig would throw.
-    if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW !== 'clone' && VIEW !== 'remoteRepo' && VIEW.indexOf('diff:') !== 0 && VIEW.indexOf('merge:') !== 0) {
+    if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW !== 'clone' && VIEW !== 'remoteRepo' && VIEW.indexOf('diff:') !== 0 && VIEW.indexOf('merge:') !== 0 && VIEW.indexOf('stash:') !== 0) {
       void loadConfig().then(renderLists);
     }
     // The sidebar surface (also booted headless by the app as the decorations host) reacts to disk
@@ -71,6 +72,7 @@ let viewMode: ViewMode = 'list';
 let lastStaged: FileEntry[] = [];
 let lastUnstaged: FileEntry[] = [];
 let lastConflicts: FileEntry[] = [];
+let lastStashes: StashEntry[] = [];
 const collapsedFolders = new Set<string>();
 
 async function exec(cmd: string, opts: { workdir?: string | null; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<ExecResult> {
@@ -171,6 +173,8 @@ const IC_CHEV = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M6 4l4 4-
 const IC_OURS = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M10.53 3.47a.75.75 0 010 1.06L7.06 8l3.47 3.47a.75.75 0 11-1.06 1.06l-4-4a.75.75 0 010-1.06l4-4a.75.75 0 011.06 0z"/></svg>';
 const IC_THEIRS = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M5.47 3.47a.75.75 0 011.06 0l4 4a.75.75 0 010 1.06l-4 4a.75.75 0 01-1.06-1.06L8.94 8 5.47 4.53a.75.75 0 010-1.06z"/></svg>';
 const IC_RESOLVED = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M13.78 4.22a.75.75 0 010 1.06l-6.5 6.5a.75.75 0 01-1.06 0l-3-3a.75.75 0 111.06-1.06L6.75 10.19l5.97-5.97a.75.75 0 011.06 0z"/></svg>';
+const IC_APPLY = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M7.47 9.78a.75.75 0 001.06 0l2.25-2.25a.75.75 0 10-1.06-1.06l-.97.97V2.75a.75.75 0 00-1.5 0v4.69l-.97-.97a.75.75 0 00-1.06 1.06l2.25 2.25zM3.75 12.5a.75.75 0 000 1.5h8.5a.75.75 0 000-1.5h-8.5z"/></svg>';
+const IC_POP = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M8.53 5.22a.75.75 0 00-1.06 0L5.22 7.47a.75.75 0 001.06 1.06l.97-.97v4.69a.75.75 0 001.5 0V7.56l.97.97a.75.75 0 101.06-1.06L8.53 5.22zM3.75 2.5a.75.75 0 000 1.5h8.5a.75.75 0 000-1.5h-8.5z"/></svg>';
 
 // ---- boot / repo detection ----
 async function boot() {
@@ -354,7 +358,7 @@ async function addToGitignore(guestPath: string, isDirectory: boolean) {
 }
 
 async function doInit() { setBusy(true); const r = await git('init', 30000); if (out(r)) logShow(out(r)); setBusy(false); bootP = boot(); }
-async function refreshAll() { await Promise.all([refreshStatus(), refreshBranches(), refreshGh()]); }
+async function refreshAll() { await Promise.all([refreshStatus(), refreshBranches(), refreshStashes(), refreshGh()]); }
 
 // ---- config (Phase: generic extension settings; graceful fallback to localStorage) ----
 async function loadConfig() {
@@ -511,7 +515,7 @@ function renderLists() {
     { icon: IC_RESOLVED, title: 'Mark resolved', fn: () => markResolved(f.path) },
   ]);
   renderSection('stagedList', 'stagedCount', 'unstageAll', lastStaged, true, (f) => [{ icon: IC_UNSTAGE, title: 'Unstage', fn: () => unstage(f.path) }]);
-  renderSection('changeList', 'changeCount', ['stageAll', 'discardAll'], lastUnstaged, false, (f) => [
+  renderSection('changeList', 'changeCount', ['stageAll', 'discardAll', 'stashChanges'], lastUnstaged, false, (f) => [
     { icon: IC_DISCARD, title: 'Discard', fn: () => discard(f) },
     { icon: IC_STAGE, title: 'Stage', fn: () => stage(f.path) },
   ]);
@@ -638,6 +642,98 @@ const discardAll = () => {
     onConfirm: discardAllRun,
   });
 };
+
+// ---- stash ----
+async function refreshStashes() {
+  if (!repo) { lastStashes = []; renderStashes(); return; }
+  const r = await git("stash list --format='%gd%x1f%s'");
+  lastStashes = (r.exitCode === 0 ? out(r) : '').split('\n').filter(Boolean).map((line) => {
+    const i = line.indexOf('\x1f');
+    return i < 0 ? { ref: line.trim(), desc: '' } : { ref: line.slice(0, i).trim(), desc: line.slice(i + 1) };
+  });
+  renderStashes();
+}
+function renderStashes() {
+  $('stashSec').classList.toggle('hide', lastStashes.length === 0);
+  $('stashCount').textContent = String(lastStashes.length);
+  $('stashPopLatest').classList.toggle('hide', lastStashes.length === 0);
+  const el = $('stashList');
+  el.innerHTML = '';
+  lastStashes.forEach((s, i) => el.appendChild(stashRow(s, i)));
+}
+function stashRow(s: StashEntry, index: number): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'file';
+  const st = document.createElement('span');
+  st.className = 'st R'; st.textContent = String(index);
+  const nm = document.createElement('div');
+  nm.className = 'nm tapdiff';
+  const base = document.createElement('span'); base.className = 'base'; base.textContent = s.desc || s.ref;
+  const dir = document.createElement('span'); dir.className = 'dir'; dir.textContent = s.ref;
+  nm.appendChild(base); nm.appendChild(dir);
+  nm.title = s.ref + (s.desc ? ' — ' + s.desc : '');
+  nm.onclick = () => openStashDiff(s);
+  const fa = document.createElement('div'); fa.className = 'fa';
+  const actions: Action[] = [
+    { icon: IC_APPLY, title: 'Apply (keep in stash list)', fn: () => stashApply(s) },
+    { icon: IC_POP, title: 'Pop (apply and remove)', fn: () => stashPop(s) },
+    { icon: IC_DISCARD, title: 'Drop (delete stash)', fn: () => stashDrop(s) },
+  ];
+  actions.forEach((a) => {
+    const btn = document.createElement('button');
+    btn.className = 'ic'; btn.title = a.title; btn.innerHTML = a.icon; btn.onclick = a.fn;
+    fa.appendChild(btn);
+  });
+  row.appendChild(st); row.appendChild(nm); row.appendChild(fa);
+  return row;
+}
+// Stash all working-tree changes (staged + unstaged + untracked). Reuses the commit message box as
+// the stash message when it holds text.
+async function stashChanges() {
+  const box = $<HTMLTextAreaElement>('msg');
+  const msg = box.value.trim();
+  await run(() => git('stash push --include-untracked' + (msg ? ' -m ' + sh(msg) : '')), async (r, text) => {
+    if (r.exitCode !== 0) return;
+    if (msg) { box.value = ''; box.style.height = 'auto'; refreshCommitState(); }
+    logShow(text || 'Changes stashed.');
+    await refreshStatus();
+    await refreshStashes();
+  });
+}
+// Applying/popping restores a stash onto the working tree (and can conflict with current changes),
+// so confirm first. Apply keeps the stash; Pop applies then removes it.
+function stashApply(s: StashEntry) {
+  showModal({
+    title: 'Apply stash',
+    body: 'Apply <b>' + escapeHtml(s.ref) + '</b>' + (s.desc ? ' — ' + escapeHtml(s.desc) : '') +
+      ' onto the working tree? It stays in the stash list.',
+    confirmLabel: 'Apply',
+    onConfirm: () => void run(() => git('stash apply ' + sh(s.ref)), async () => { await refreshStatus(); await refreshBranches(); }),
+  });
+}
+function stashPop(s: StashEntry) {
+  showModal({
+    title: 'Pop stash',
+    body: 'Apply <b>' + escapeHtml(s.ref) + '</b>' + (s.desc ? ' — ' + escapeHtml(s.desc) : '') +
+      ' onto the working tree and remove it from the stash list?',
+    confirmLabel: 'Pop',
+    onConfirm: () => void run(() => git('stash pop ' + sh(s.ref)), async () => { await refreshStatus(); await refreshStashes(); await refreshBranches(); }),
+  });
+}
+function popLatestStash() { if (lastStashes.length) stashPop(lastStashes[0]); }
+function stashDrop(s: StashEntry) {
+  showModal({
+    title: 'Drop stash',
+    body: 'Delete <b>' + escapeHtml(s.ref) + '</b>' + (s.desc ? ' — ' + escapeHtml(s.desc) : '') + '? This can’t be undone.',
+    confirmLabel: 'Drop', danger: true,
+    onConfirm: () => void run(() => git('stash drop ' + sh(s.ref)), refreshStashes),
+  });
+}
+// Open a stash's full patch as a read-only diff in the editor area (its own #stash: view page).
+function openStashDiff(s: StashEntry) {
+  const r = repo ? encodeURIComponent(repo) : '';
+  void api('workbench.openView', { view: 'stash:' + r + ':' + encodeURIComponent(s.ref), title: s.ref + ' — stash' });
+}
 
 // Commit staged changes; returns true on success so the split-button variants can chain push/sync.
 // amend re-commits into HEAD (keeps the old message when the box is empty, else rewrites it).
@@ -1152,7 +1248,7 @@ async function renderDiffPage() {
 
 // Render unified-diff text as colored rows with a new-file line-number gutter; clicking a row jumps to
 // that line in the real file. +added / -removed / @@ hunk / file-header meta.
-function renderDiffInto(el: HTMLElement, text: string, path: string) {
+function renderDiffInto(el: HTMLElement, text: string, path: string, openable = true) {
   if (!text.replace(/\s+$/, '')) { el.innerHTML = '<div class="dempty">No differences to show.</div>'; return; }
   el.innerHTML = '';
   const frag = document.createDocumentFragment();
@@ -1170,10 +1266,40 @@ function renderDiffInto(el: HTMLElement, text: string, path: string) {
     const g = document.createElement('span'); g.className = 'ln'; g.textContent = gutter;
     const c = document.createElement('span'); c.className = 'code'; c.textContent = line || ' ';
     div.appendChild(g); div.appendChild(c);
-    if (openLn > 0 && kind !== 'meta') { div.classList.add('tap'); div.title = 'Open at line ' + openLn; div.onclick = () => openFileAt(path, openLn); }
+    if (openable && openLn > 0 && kind !== 'meta') { div.classList.add('tap'); div.title = 'Open at line ' + openLn; div.onclick = () => openFileAt(path, openLn); }
     frag.appendChild(div);
   }
   el.appendChild(frag);
+}
+
+// A stash's full patch (git stash show -p) as a read-only diff page in the editor area. Opened via the
+// #stash:<repo>:<ref> view; the stash isn't in the working tree, so rows aren't click-to-open.
+async function renderStashDiffPage() {
+  const m = VIEW.match(/^stash:([^:]*):([\s\S]*)$/);
+  let ref = m ? m[2] : '';
+  try { ref = decodeURIComponent(ref); } catch { /* the hash was already decoded */ }
+  let hashRepo = '';
+  if (m && m[1]) { try { hashRepo = decodeURIComponent(m[1]); } catch { hashRepo = m[1]; } }
+  repo = hashRepo || localStorage.getItem('scm.activeRepo') || null;
+  if (!repo) {
+    const info = await api('workbench.projectInfo');
+    projectPath = info.ok && info.data && info.data.path ? info.data.path : null;
+    if (projectPath) {
+      const top = await rawGit(projectPath, 'rev-parse --show-toplevel 2>/dev/null');
+      const root = out(top).split('\n').filter(Boolean).pop() || '';
+      if (top.exitCode === 0 && root) repo = root;
+    }
+  }
+  document.body.className = 'authpage';
+  document.body.innerHTML =
+    '<div class="page pagewide">' +
+    '<div class="page-hd">' + FILE_ICON +
+    '<div style="flex:1;min-width:0"><h1 class="mono difftitle">' + escapeHtml(ref) + '</h1><div class="sub">Stashed changes</div></div></div>' +
+    '<div id="diffBody" class="diffwrap"><div class="dempty">Loading diff…</div></div>' +
+    '</div>';
+  if (!repo) { document.getElementById('diffBody')!.innerHTML = '<div class="dempty">This project isn’t a git repository.</div>'; return; }
+  const r = await rawGit(repo, 'stash show -p --no-color ' + sh(ref), 60000);
+  renderDiffInto(document.getElementById('diffBody')!, out(r), '', false);
 }
 
 // ---- merge conflict resolution: the "Merge Changes" list actions + the 3-way merge editor page ----
@@ -1670,6 +1796,8 @@ if (VIEW === 'github') {
   void renderMergePage();
 } else if (VIEW.indexOf('diff:') === 0) {
   void renderDiffPage();
+} else if (VIEW.indexOf('stash:') === 0) {
+  void renderStashDiffPage();
 } else {
   document.querySelectorAll<HTMLElement>('.sec-hd').forEach((h) => {
     h.addEventListener('click', (e) => { if ((e.target as HTMLElement).closest('.act')) return; $(h.dataset.sec!).classList.toggle('collapsed'); });
@@ -1686,6 +1814,8 @@ if (VIEW === 'github') {
   $('stageAll').onclick = stageAll;
   $('unstageAll').onclick = unstageAll;
   $('discardAll').onclick = discardAll;
+  $('stashChanges').onclick = stashChanges;
+  $('stashPopLatest').onclick = popLatestStash;
   $('saveId').onclick = saveIdentity;
   $('fetch').onclick = fetch_;
   $('pull').onclick = pull;

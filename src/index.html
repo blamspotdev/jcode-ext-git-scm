@@ -79,9 +79,17 @@
     <div class="sec" id="changeSec">
       <div class="sec-hd" data-sec="changeSec">
         <span class="chev">▾</span><span class="ttl">Changes</span><span class="badge" id="changeCount">0</span>
-        <span class="sp"></span><button class="act hide" id="stageAll">Stage all</button><button class="act hide" id="discardAll">Discard all</button>
+        <span class="sp"></span><button class="act hide" id="stageAll">Stage all</button><button class="act hide" id="discardAll">Discard all</button><button class="act hide" id="stashChanges">Stash</button>
       </div>
       <div class="list" id="changeList"></div>
+    </div>
+
+    <div class="sec hide collapsed" id="stashSec">
+      <div class="sec-hd" data-sec="stashSec">
+        <span class="chev">▾</span><span class="ttl">Stashes</span><span class="badge" id="stashCount">0</span>
+        <span class="sp"></span><button class="act hide" id="stashPopLatest">Pop latest</button>
+      </div>
+      <div class="list" id="stashList"></div>
     </div>
 
   </div>
