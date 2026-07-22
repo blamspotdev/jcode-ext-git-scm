@@ -57,8 +57,11 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent)}
 .notice b{color:var(--fg)}
 
 /* Compact centered empty state (no project / no git / no repo). Fills the panel and centers, so it
-   reads as intentional rather than a sparse text block; the header chrome is hidden behind it. */
-.estate{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+   reads as intentional rather than a sparse text block; the header chrome is hidden behind it.
+   Uses position:fixed (not absolute) so it fills the WebView viewport directly: JCode hosts this page
+   in an Android WebView where `html,body{height:100%}` collapses to 0, which would leave an
+   inset:0 absolute box with no height to center within. */
+.estate{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
   text-align:center;gap:10px;padding:24px;color:var(--muted)}
 .estate .eic{width:48px;height:48px;border-radius:14px;display:flex;align-items:center;justify-content:center;
   background:color-mix(in srgb, var(--accent) 14%, transparent);color:var(--accent)}
