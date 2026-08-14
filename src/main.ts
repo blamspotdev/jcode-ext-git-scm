@@ -93,8 +93,10 @@ const GITP = "git -c safe.directory='*' -c core.quotePath=false -c core.createOb
 const rawGit = (workdir: string, args: string, t?: number) => exec(GITP + args, { workdir, timeoutMs: t });
 const git = (args: string, t?: number) => exec(GITP + args, { workdir: repo, timeoutMs: t });
 
-// Git command output / status messages surface in a dismissible dialog rather than an inline panel
-// log, so multi-line output (init, push/pull, errors) doesn't shove the SCM content around.
+// A dialog reports PROBLEMS — a failed command, or something the user has to supply before one can
+// run. Success is reported by the panel itself changing: the file lists empty out, the ahead/behind
+// badge resets, the stash list grows. Popping "Pushed." over a push that plainly worked is a modal
+// interruption carrying no information, so routine successes stay silent.
 let logDlg: HTMLElement | null = null;
 function logHide() { if (logDlg) { logDlg.remove(); logDlg = null; } }
 function logShow(t: string) {
@@ -111,6 +113,22 @@ function logShow(t: string) {
   (document.getElementById('__logOk') as HTMLButtonElement).onclick = logHide;
   back.onclick = (e) => { if (e.target === back) logHide(); };
 }
+// Fetch / pull / push talk to a remote, so on a phone connection they can sit there for many seconds.
+// Greying the buttons out is not enough feedback — the panel just looks frozen — so cover it with a
+// scrim carrying a spinner and the operation's name for as long as it runs. Its z-index sits BELOW
+// the modal's, so an error dialog raised afterwards is never trapped underneath.
+let progEl: HTMLElement | null = null;
+function progressShow(label: string) {
+  progressHide();
+  const el = document.createElement('div');
+  el.className = 'prog-scrim';
+  el.innerHTML = '<div class="prog"><span class="prog-spin"></span><span class="prog-lbl"></span></div>';
+  (el.querySelector('.prog-lbl') as HTMLElement).textContent = label;
+  document.body.appendChild(el);
+  progEl = el;
+}
+function progressHide() { if (progEl) { progEl.remove(); progEl = null; } }
+
 function setBranch(t: string) { $('branchName').textContent = t; }
 // The branch switcher, fetch/pull/push and the tree/list toggle only make sense once a repository
 // exists. They stay hidden in the no-project / no-git / no-repo states so the toolbar can't drive git
@@ -357,7 +375,9 @@ async function addToGitignore(guestPath: string, isDirectory: boolean) {
   if (repo === target && !busy) void refreshStatus();
 }
 
-async function doInit() { setBusy(true); const r = await git('init', 30000); if (out(r)) logShow(out(r)); setBusy(false); bootP = boot(); }
+// Error-only: on success git prints "Initialized empty Git repository in …", and the panel switching
+// from the no-repo empty state to the file lists already says that.
+async function doInit() { setBusy(true); const r = await git('init', 30000); if (r.exitCode !== 0) logShow(out(r) || 'Could not initialise a repository.'); setBusy(false); bootP = boot(); }
 async function refreshAll() { await Promise.all([refreshStatus(), refreshBranches(), refreshStashes(), refreshGh()]); }
 
 // ---- config (Phase: generic extension settings; graceful fallback to localStorage) ----
@@ -617,11 +637,21 @@ function folderRow(label: string, key: string, depth: number, closed: boolean): 
 }
 
 // ---- actions ----
-async function run(cmd: () => Promise<ExecResult>, done?: (r: ExecResult, text: string) => void | Promise<void>) {
+// [progress] shows the overlay under that label while the command runs. [quiet] suppresses the
+// automatic failure dialog for callers that inspect the failure themselves — push does, because a
+// first push failing for "no upstream branch" is not a problem to report, just a retry with -u.
+type RunOpts = { progress?: string; quiet?: boolean };
+async function run(
+  cmd: () => Promise<ExecResult>,
+  done?: (r: ExecResult, text: string) => void | Promise<void>,
+  opts?: RunOpts,
+) {
   setBusy(true); logHide();
+  if (opts?.progress) progressShow(opts.progress);
   const r = await cmd();
   const text = out(r);
-  if (r.exitCode !== 0 && text) logShow(text);
+  progressHide();
+  if (r.exitCode !== 0 && text && !opts?.quiet) logShow(text);
   setBusy(false);
   if (done) await done(r, text);
 }
@@ -697,9 +727,10 @@ function stashChanges() {
     confirmLabel: 'Stash',
     onConfirm: (value) => {
       const msg = (value || '').trim();
-      void run(() => git('stash push --include-untracked' + (msg ? ' -m ' + sh(msg) : '')), async (r, text) => {
+      // Silent on success: the changes leaving the file lists and the new entry appearing under
+      // Stashes say it happened.
+      void run(() => git('stash push --include-untracked' + (msg ? ' -m ' + sh(msg) : '')), async (r) => {
         if (r.exitCode !== 0) return;
-        logShow(text || 'Changes stashed.');
         await refreshStatus();
         await refreshStashes();
       });
@@ -890,13 +921,23 @@ function createBranch() {
 // ---- sync ----
 // Fetch is a passive sync — succeed silently (any incoming commits surface via the ahead/behind badge);
 // run() already surfaces errors.
-const fetch_ = () => run(() => git('fetch --all --prune', 120000), async () => { await refreshStatus(); await refreshBranches(); });
+const fetch_ = () => run(
+  () => git('fetch --all --prune', 120000),
+  async () => { await refreshStatus(); await refreshBranches(); },
+  { progress: 'Fetching…' },
+);
 // A plain `git pull` aborts when uncommitted local changes would be overwritten by the incoming
 // merge/rebase (leaving the user stuck on the raw git error). Detect that and offer to stash-pull-reapply
 // via `--autostash`, so incoming changes land without losing local work; if the re-apply conflicts the
 // files surface in "Merge Changes" like any other conflict.
 const PULL_DIRTY_RE = /would be overwritten|commit your changes or stash them|cannot pull with rebase|you have unstaged changes|not uptodate/i;
-const pullAutostash = () => run(() => git('pull --autostash', 180000), async (_r, t) => { logShow(t || 'Up to date.'); await refreshStatus(); await refreshBranches(); });
+const pullAutostash = () => run(
+  () => git('pull --autostash', 180000),
+  async () => { await refreshStatus(); await refreshBranches(); },
+  { progress: 'Pulling…' },
+);
+// quiet, because the dirty-tree failure below is answered with an offer rather than an error dump;
+// anything else still reaches the dialog through the explicit logShow.
 const pull = () => run(() => git('pull', 180000), async (r, t) => {
   if (r.exitCode !== 0 && PULL_DIRTY_RE.test(t)) {
     showModal({
@@ -907,17 +948,25 @@ const pull = () => run(() => git('pull', 180000), async (r, t) => {
     });
     return;
   }
-  logShow(t || 'Up to date.'); await refreshStatus(); await refreshBranches();
-});
+  if (r.exitCode !== 0) { logShow(t || 'Pull failed.'); return; }
+  await refreshStatus(); await refreshBranches();
+}, { progress: 'Pulling…', quiet: true });
 async function push() {
   await run(() => git('push', 180000), async (r, text) => {
-    if (r.exitCode === 0) { logShow(text || 'Pushed.'); await refreshStatus(); return; }
+    if (r.exitCode === 0) { await refreshStatus(); return; }
+    // A branch that has never been pushed fails with "no upstream branch". That is not a problem to
+    // report — it just needs -u — so retry silently and only surface something if the retry fails.
     if (/has no upstream branch|set-upstream/i.test(text)) {
       const b = out(await git('rev-parse --abbrev-ref HEAD')).trim();
+      setBusy(true); progressShow('Pushing…');
       const r2 = await git('push -u origin ' + sh(b), 180000);
-      logShow(out(r2) || 'Pushed.'); await refreshStatus(); await refreshBranches();
+      progressHide(); setBusy(false);
+      if (r2.exitCode !== 0) { logShow(out(r2) || 'Push failed.'); return; }
+      await refreshStatus(); await refreshBranches();
+      return;
     }
-  });
+    logShow(text || 'Push failed.');
+  }, { progress: 'Pushing…', quiet: true });
 }
 
 // ---- GitHub state indicator (dot on the drawer header; sign-in + identity live on the auth page) ----
