@@ -1067,6 +1067,8 @@ async function authSaveIdentity() {
 // ---- Git manage page (branches + history), opened in the editor via workbench.openView #manage ----
 const BRANCH_ICON = '<svg viewBox="0 0 16 16" width="24" height="24"><path fill="currentColor" d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6A2.5 2.5 0 0110 8.5H6a1 1 0 00-1 1v1.128a2.251 2.251 0 11-1.5 0V5.372a2.25 2.25 0 111.5 0v1.836A2.492 2.492 0 016 7h4a1 1 0 001-1v-.628A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z"></path></svg>';
 let manageTab: 'local' | 'remote' = 'local';
+// The branch a merge would land on. Held here so a row's menu can name it without re-reading HEAD.
+let currentBranch = '';
 
 async function renderManagePage() {
   const info = await api('workbench.projectInfo');
@@ -1113,23 +1115,118 @@ async function refreshManage() {
   await renderBranchList(cur);
   await renderCommits();
 }
+// A remote ref has no upstream of its own, so its incoming/outgoing is measured against HEAD — "how
+// far is origin/main from where I am". That needs one rev-list per row, so it is bounded; past the
+// cap the rows still render, just without counts.
+const REMOTE_TRACK_CAP = 40;
+async function remoteTrack(ref: string): Promise<string> {
+  const r = await git('rev-list --left-right --count HEAD...' + sh(ref));
+  const m = /^(\d+)\s+(\d+)/.exec(out(r).trim());
+  if (!m) return '';
+  const ahead = Number(m[1]), behind = Number(m[2]);   // left = ours, right = theirs
+  if (!ahead && !behind) return '';
+  return '[' + (ahead ? 'ahead ' + ahead : '') + (ahead && behind ? ', ' : '') + (behind ? 'behind ' + behind : '') + ']';
+}
+
 async function renderBranchList(cur?: string) {
   const current = cur ?? out(await git('rev-parse --abbrev-ref HEAD')).trim();
+  currentBranch = current;
   const list = $('mBranchList'); list.innerHTML = '';
   if (manageTab === 'local') {
-    const r = await git("branch --format='%(refname:short)%09%(HEAD)%09%(upstream:short)'");
+    // %(upstream:track) carries the ahead/behind counts, so the whole list costs this one command.
+    const r = await git("branch --format='%(refname:short)%09%(HEAD)%09%(upstream:short)%09%(upstream:track)'");
     const lines = out(r).split('\n').map((s) => s.trim()).filter(Boolean);
     if (!lines.length) { list.innerHTML = '<div class="empty">No local branches.</div>'; return; }
-    lines.forEach((line) => { const p = line.split('\t'); list.appendChild(localBranchRow(p[0], p[1] === '*', p[2] || '')); });
+    lines.forEach((line) => { const p = line.split('\t'); list.appendChild(localBranchRow(p[0], p[1] === '*', p[2] || '', p[3] || '')); });
   } else {
     const r = await git("branch -r --format='%(refname:short)'");
     const names = out(r).split('\n').map((s) => s.trim()).filter(Boolean).filter((n) => n.indexOf('/HEAD') < 0);
     if (!names.length) { list.innerHTML = '<div class="empty">No remote branches — Fetch to update.</div>'; return; }
-    names.forEach((n) => list.appendChild(remoteBranchRow(n, current)));
+    const tracks = await Promise.all(names.map((n, i) => (i < REMOTE_TRACK_CAP ? remoteTrack(n) : Promise.resolve(''))));
+    names.forEach((n, i) => list.appendChild(remoteBranchRow(n, current, tracks[i])));
   }
 }
 function mkBtn(label: string, cls: string, fn: () => void): HTMLButtonElement {
   const b = document.createElement('button'); b.className = cls; b.textContent = label; b.onclick = fn; return b;
+}
+
+const IC_DOTS = '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor">' +
+  '<circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/></svg>';
+
+// One overflow menu per branch row. A row can offer five actions, and five labelled buttons do not
+// fit a phone-width row beside the branch name — so the row keeps its name, its tracking counts and
+// a single dots button, and the actions live behind it.
+//
+// The manage page rebuilds document.body, so it cannot reuse the panel's fixed popup elements; this
+// builds its own and anchors it to the button that opened it.
+type MenuItem = { label: string; danger?: boolean; onPick: () => void };
+let rowMenu: HTMLElement | null = null;
+function closeRowMenu() { if (rowMenu) { rowMenu.remove(); rowMenu = null; } }
+function mkMenu(items: MenuItem[]): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.className = 'bdots'; b.type = 'button'; b.title = 'Branch actions';
+  b.setAttribute('aria-label', 'Branch actions');
+  b.innerHTML = IC_DOTS;
+  b.onclick = (e) => {
+    e.stopPropagation();
+    const wasOpen = rowMenu !== null;
+    closeRowMenu();
+    if (wasOpen) return;             // tapping the same button again just closes it
+    const scrim = document.createElement('div'); scrim.className = 'menu-scrim';
+    const menu = document.createElement('div'); menu.className = 'bmenu';
+    items.forEach((it) => {
+      const mi = document.createElement('button');
+      mi.className = 'bmi' + (it.danger ? ' danger' : '');
+      mi.textContent = it.label;
+      mi.onclick = () => { closeRowMenu(); it.onPick(); };
+      menu.appendChild(mi);
+    });
+    scrim.appendChild(menu);
+    document.body.appendChild(scrim);
+    rowMenu = scrim;
+    // Anchored under the button, then pulled back inside the viewport — a row near the bottom of a
+    // long branch list would otherwise open its menu off-screen.
+    const r = b.getBoundingClientRect();
+    let left = r.right - menu.offsetWidth;
+    if (left < 8) left = 8;
+    let top = r.bottom + 6;
+    if (top + menu.offsetHeight > window.innerHeight - 8) top = Math.max(8, r.top - menu.offsetHeight - 6);
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    scrim.onclick = (ev) => { if (ev.target === scrim) closeRowMenu(); };
+  };
+  return b;
+}
+
+// Incoming / outgoing counts for a branch. `git for-each-ref`'s %(upstream:track) already carries
+// them for a local branch — "[ahead 2, behind 3]", "[behind 1]", "[gone]" or empty — so the whole
+// list costs one command rather than a rev-list per row.
+function trackEl(track: string): HTMLElement | null {
+  const t = (track || '').trim();
+  if (!t) return null;
+  const wrap = document.createElement('span'); wrap.className = 'btrack';
+  if (t === '[gone]') {
+    const g = document.createElement('span'); g.className = 'bgone'; g.textContent = 'gone';
+    g.title = 'The upstream branch no longer exists';
+    wrap.appendChild(g);
+    return wrap;
+  }
+  const behind = /behind (\d+)/.exec(t);
+  const ahead = /ahead (\d+)/.exec(t);
+  if (!behind && !ahead) return null;
+  if (behind) {
+    const s = document.createElement('span'); s.className = 'bin';
+    s.textContent = '↓' + behind[1];
+    s.title = behind[1] + ' incoming (behind upstream)';
+    wrap.appendChild(s);
+  }
+  if (ahead) {
+    const s = document.createElement('span'); s.className = 'bout';
+    s.textContent = '↑' + ahead[1];
+    s.title = ahead[1] + ' outgoing (ahead of upstream)';
+    wrap.appendChild(s);
+  }
+  return wrap;
 }
 // Modal dialog (confirm / simple form) — built in-page because WebView confirm()/prompt() are no-ops.
 function showModal(opts: { title: string; body?: string; input?: { value: string; placeholder?: string }; confirmLabel: string; danger?: boolean; onConfirm: (value?: string) => void }) {
@@ -1150,22 +1247,22 @@ function showModal(opts: { title: string; body?: string; input?: { value: string
   back.onclick = (e) => { if (e.target === back) close(); };
   if (inp) inp.onkeydown = (e) => { if (e.key === 'Enter') ok(); };
 }
-function mkDelete(cmd: () => Promise<ExecResult>, name: string): HTMLButtonElement {
-  return mkBtn('Delete', 'btn ghost danger', () => showModal({
+function deleteBranch(cmd: () => Promise<ExecResult>, name: string) {
+  showModal({
     title: 'Delete branch',
     body: 'Delete <b>' + escapeHtml(name) + '</b>? This can’t be undone.',
     confirmLabel: 'Delete', danger: true,
     onConfirm: () => manageRun(cmd, 'Deleted ' + name),
-  }));
+  });
 }
-function mkRename(oldName: string): HTMLButtonElement {
-  return mkBtn('Rename', 'btn ghost', () => showModal({
+function renameBranch(oldName: string) {
+  showModal({
     title: 'Rename branch',
     body: 'Rename <b>' + escapeHtml(oldName) + '</b> to:',
     input: { value: oldName, placeholder: 'branch name' },
     confirmLabel: 'Rename',
     onConfirm: (v) => { const nn = (v || '').trim(); if (!nn || nn === oldName) return; void manageRun(() => git('branch -m ' + sh(oldName) + ' ' + sh(nn)), 'Renamed to ' + nn); },
-  }));
+  });
 }
 // Checkout — warn first if the working tree is dirty (uncommitted/staged), else switch directly.
 function checkoutBranch(name: string) {
@@ -1182,35 +1279,75 @@ function checkoutBranch(name: string) {
     } else go();
   })();
 }
-function localBranchRow(name: string, isCurrent: boolean, upstream: string): HTMLElement {
+// Merge always asks first: it rewrites the current branch, and on a touch device a menu tap is easy
+// to make by accident. A conflicting merge surfaces in the panel's "Merge Changes" like any other.
+function mergeIntoCurrent(name: string, current: string) {
+  showModal({
+    title: 'Merge branch',
+    body: 'Merge <b>' + escapeHtml(name) + '</b> into <b>' + escapeHtml(current) + '</b>?',
+    confirmLabel: 'Merge',
+    onConfirm: () => { void manageRun(() => git('merge ' + sh(name), 180000), 'Merged ' + name, 'Merging…'); },
+  });
+}
+
+// Pull on the CURRENT branch is a plain pull. On any other local branch git can fast-forward the ref
+// straight from its upstream without a working-tree switch, which is what `fetch <remote> <src>:<dst>`
+// does; git refuses rather than merging if it is not a fast-forward, which is the safe outcome here.
+function pullBranch(name: string, isCurrent: boolean, upstream: string) {
+  if (isCurrent) { void manageRun(() => git('pull', 180000), 'Pulled ' + name, 'Pulling…'); return; }
+  const slash = upstream.indexOf('/');
+  const remote = slash >= 0 ? upstream.slice(0, slash) : 'origin';
+  const rb = slash >= 0 ? upstream.slice(slash + 1) : name;
+  void manageRun(() => git('fetch ' + sh(remote) + ' ' + sh(rb) + ':' + sh(name), 180000), 'Updated ' + name, 'Pulling…');
+}
+
+function localBranchRow(name: string, isCurrent: boolean, upstream: string, track: string): HTMLElement {
   const row = document.createElement('div'); row.className = 'brow';
   const nm = document.createElement('span'); nm.className = 'bname' + (isCurrent ? ' cur' : ''); nm.textContent = name; nm.title = name;
   row.appendChild(nm);
   if (upstream) { const u = document.createElement('span'); u.className = 'bup'; u.textContent = upstream; row.appendChild(u); }
   if (isCurrent) { const t = document.createElement('span'); t.className = 'btag'; t.textContent = 'current'; row.appendChild(t); }
+  const tr = trackEl(track); if (tr) row.appendChild(tr);
   const act = document.createElement('div'); act.className = 'bact';
-  if (!isCurrent) act.appendChild(mkBtn('Checkout', 'btn ghost', () => checkoutBranch(name)));
-  act.appendChild(mkRename(name));
-  if (!isCurrent) act.appendChild(mkDelete(() => git('branch -D ' + sh(name)), name));
+  const items: MenuItem[] = [];
+  if (!isCurrent) {
+    items.push({ label: 'Checkout', onPick: () => checkoutBranch(name) });
+    items.push({ label: 'Merge to current branch', onPick: () => mergeIntoCurrent(name, currentBranch) });
+  }
+  // Without an upstream there is nothing to pull from, so the entry is left out rather than offered
+  // and then failing.
+  if (isCurrent || upstream) items.push({ label: 'Pull', onPick: () => pullBranch(name, isCurrent, upstream) });
+  items.push({ label: 'Rename', onPick: () => renameBranch(name) });
+  if (!isCurrent) items.push({ label: 'Delete', danger: true, onPick: () => deleteBranch(() => git('branch -D ' + sh(name)), name) });
+  act.appendChild(mkMenu(items));
   row.appendChild(act);
   return row;
 }
-function remoteBranchRow(name: string, current: string): HTMLElement {
+
+function remoteBranchRow(name: string, current: string, track: string): HTMLElement {
   const slash = name.indexOf('/');
   const short = slash >= 0 ? name.slice(slash + 1) : name;
   const row = document.createElement('div'); row.className = 'brow';
   const nm = document.createElement('span'); nm.className = 'bname' + (short === current ? ' cur' : ''); nm.textContent = name; nm.title = name;
   row.appendChild(nm);
+  const tr = trackEl(track); if (tr) row.appendChild(tr);
   const act = document.createElement('div'); act.className = 'bact';
-  // Remote branches are checkout-only — deleting a remote branch is destructive and easy to do by
-  // accident on a touch device, so it's intentionally not offered here.
-  act.appendChild(mkBtn('Checkout', 'btn ghost', () => checkoutBranch(short)));
+  // Remote branches are read-only here — deleting one is destructive and easy to do by accident on a
+  // touch device, so it is intentionally not offered.
+  act.appendChild(mkMenu([
+    { label: 'Checkout', onPick: () => checkoutBranch(short) },
+    { label: 'Merge to current branch', onPick: () => mergeIntoCurrent(name, current) },
+  ]));
   row.appendChild(act);
   return row;
 }
-async function manageRun(cmd: () => Promise<ExecResult>, okMsg: string) {
+// [progress] raises the overlay for the operations that reach the network (pull, merge of a remote
+// ref). The inline status line still carries the outcome, so success needs no dialog here either.
+async function manageRun(cmd: () => Promise<ExecResult>, okMsg: string, progress?: string) {
   mMsg('Working…');
+  if (progress) progressShow(progress);
   const r = await cmd();
+  if (progress) progressHide();
   if (r.exitCode === 0) { mMsg(okMsg); await refreshManage(); }
   else { mMsg(out(r) || 'Failed.', true); await renderBranchList(); }
 }
