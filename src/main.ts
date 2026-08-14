@@ -37,7 +37,7 @@ function api(type: string, payload?: unknown): Promise<ApiResult> {
   _onEvent(name: string, json: string) {
     // Only the sidebar surface reloads config; the #github/#manage/#diff editor pages replaced
     // document.body and no longer have the sidebar DOM (#viewToggle, lists), so loadConfig would throw.
-    if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW !== 'clone' && VIEW !== 'remoteRepo' && VIEW.indexOf('diff:') !== 0 && VIEW.indexOf('merge:') !== 0 && VIEW.indexOf('stash:') !== 0) {
+    if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW !== 'clone' && VIEW !== 'remoteRepo' && VIEW.indexOf('diff:') !== 0 && VIEW.indexOf('merge:') !== 0 && VIEW.indexOf('stash:') !== 0 && VIEW.indexOf('commit:') !== 0) {
       void loadConfig().then(renderLists);
     }
     // The sidebar surface (also booted headless by the app as the decorations host) reacts to disk
@@ -1283,37 +1283,58 @@ function checkoutBranch(name: string) {
 // leaving the page for the history list. One constant drives both the label and the command, so the
 // menu can never promise a number the log does not return.
 const PREVIEW_COMMITS = 5;
+
+
+// The branch's recent commits, as a list. Tapping one opens that commit as its own editor page
+// (renderCommitPage) rather than drilling in here — a commit's diff wants the full width and its own
+// scroll, which a dialog over the branch list cannot give it.
 async function previewCommits(name: string) {
-  const r = await git("log -n " + PREVIEW_COMMITS + " --pretty=format:'%h%x1f%an%x1f%ar%x1f%s' " + sh(name) + ' --');
-  const lines = r.exitCode === 0 ? out(r).split('\n').filter(Boolean) : [];
-  const back = document.createElement('div'); back.className = 'modal-scrim';
+  const scrim = document.createElement('div'); scrim.className = 'modal-scrim';
   const dlg = document.createElement('div'); dlg.className = 'modal';
-  dlg.innerHTML = '<div class="modal-title"></div><div class="cpv"></div>' +
+  dlg.innerHTML =
+    '<div class="modal-title"></div><div class="cpv" id="__cpvBody"></div>' +
     '<div class="modal-actions"><button class="btn primary" id="__cpvOk">Close</button></div>';
   (dlg.querySelector('.modal-title') as HTMLElement).textContent = 'Last ' + PREVIEW_COMMITS + ' commits · ' + name;
-  const body = dlg.querySelector('.cpv') as HTMLElement;
+  scrim.appendChild(dlg); document.body.appendChild(scrim);
+  const body = dlg.querySelector('#__cpvBody') as HTMLElement;
+  const close = () => scrim.remove();
+  (dlg.querySelector('#__cpvOk') as HTMLButtonElement).onclick = close;
+  scrim.onclick = (e) => { if (e.target === scrim) close(); };
+
+  const r = await git("log -n " + PREVIEW_COMMITS + " --pretty=format:'%h%x1f%an%x1f%ar%x1f%s' " + sh(name) + ' --');
+  const lines = r.exitCode === 0 ? out(r).split('\n').filter(Boolean) : [];
   if (!lines.length) {
     const e = document.createElement('div'); e.className = 'empty';
     e.textContent = r.exitCode === 0 ? 'No commits on this branch.' : (out(r) || 'Could not read the log.');
     body.appendChild(e);
-  } else {
-    // Same row shape as the history list below, so the two read alike.
-    lines.forEach((line) => {
-      const p = line.split('\x1f');
-      const row = document.createElement('div'); row.className = 'crow';
-      const cl = document.createElement('div'); cl.className = 'cline';
-      const h = document.createElement('span'); h.className = 'chash'; h.textContent = p[0] || '';
-      const s = document.createElement('span'); s.className = 'csubj'; s.textContent = p[3] || ''; s.title = p[3] || '';
-      cl.appendChild(h); cl.appendChild(s);
-      const meta = document.createElement('div'); meta.className = 'cmeta'; meta.textContent = (p[1] || '') + ' · ' + (p[2] || '');
-      row.appendChild(cl); row.appendChild(meta);
-      body.appendChild(row);
-    });
+    return;
   }
-  back.appendChild(dlg); document.body.appendChild(back);
-  const close = () => back.remove();
-  (dlg.querySelector('#__cpvOk') as HTMLButtonElement).onclick = close;
-  back.onclick = (e) => { if (e.target === back) close(); };
+  // Same row shape as the history list below, so the two read alike - plus a chevron, because a row
+  // that opens something on tap should look like it does.
+  lines.forEach((line) => {
+    const p = line.split('');
+    const hash = p[0] || '', subject = p[3] || '';
+    const row = document.createElement('div'); row.className = 'crow tap';
+    const cl = document.createElement('div'); cl.className = 'cline';
+    const h = document.createElement('span'); h.className = 'chash'; h.textContent = hash;
+    const su = document.createElement('span'); su.className = 'csubj'; su.textContent = subject; su.title = subject;
+    const c = document.createElement('span'); c.className = 'cchev'; c.innerHTML = IC_CHEV;
+    cl.appendChild(h); cl.appendChild(su); cl.appendChild(c);
+    const meta = document.createElement('div'); meta.className = 'cmeta'; meta.textContent = (p[1] || '') + ' · ' + (p[2] || '');
+    row.appendChild(cl); row.appendChild(meta);
+    row.onclick = () => { close(); openCommit(hash); };
+    body.appendChild(row);
+  });
+}
+
+// commit:<repo>:<hash> - the repo travels in the hash because the page opens standalone and cannot
+// see this sidebar's in-memory `repo` (wrong repo in a multi-repo workspace otherwise).
+function openCommit(hash: string) {
+  const r = repo ? encodeURIComponent(repo) : '';
+  void api('workbench.openView', {
+    view: 'commit:' + r + ':' + encodeURIComponent(hash),
+    title: hash + ' — commit',
+  });
 }
 
 // Merge always asks first: it rewrites the current branch, and on a touch device a menu tap is easy
@@ -1346,8 +1367,7 @@ function localBranchRow(name: string, isCurrent: boolean, upstream: string, trac
   if (isCurrent) { const t = document.createElement('span'); t.className = 'btag'; t.textContent = 'current'; row.appendChild(t); }
   const tr = trackEl(track); if (tr) row.appendChild(tr);
   const act = document.createElement('div'); act.className = 'bact';
-  // Ordered by consequence: look first, then act, then the destructive one last.
-  const items: MenuItem[] = [{ label: 'Preview last ' + PREVIEW_COMMITS + ' commits', onPick: () => void previewCommits(name) }];
+  const items: MenuItem[] = [];
   if (!isCurrent) {
     items.push({ label: 'Checkout', onPick: () => checkoutBranch(name) });
     items.push({ label: 'Merge to current branch', onPick: () => mergeIntoCurrent(name, currentBranch) });
@@ -1357,6 +1377,8 @@ function localBranchRow(name: string, isCurrent: boolean, upstream: string, trac
   if (isCurrent || upstream) items.push({ label: 'Pull', onPick: () => pullBranch(name, isCurrent, upstream) });
   items.push({ label: 'Rename', onPick: () => renameBranch(name) });
   if (!isCurrent) items.push({ label: 'Delete', danger: true, onPick: () => deleteBranch(() => git('branch -D ' + sh(name)), name) });
+  // Last: it is the one entry that only looks, so it sits out of the way of the actions.
+  items.push({ label: 'Preview last ' + PREVIEW_COMMITS + ' commits', onPick: () => void previewCommits(name) });
   act.appendChild(mkMenu(items));
   row.appendChild(act);
   return row;
@@ -1373,9 +1395,9 @@ function remoteBranchRow(name: string, current: string, track: string): HTMLElem
   // Remote branches are read-only here — deleting one is destructive and easy to do by accident on a
   // touch device, so it is intentionally not offered.
   act.appendChild(mkMenu([
-    { label: 'Preview last ' + PREVIEW_COMMITS + ' commits', onPick: () => void previewCommits(name) },
     { label: 'Checkout', onPick: () => checkoutBranch(short) },
     { label: 'Merge to current branch', onPick: () => mergeIntoCurrent(name, current) },
+    { label: 'Preview last ' + PREVIEW_COMMITS + ' commits', onPick: () => void previewCommits(name) },
   ]));
   row.appendChild(act);
   return row;
@@ -1506,6 +1528,81 @@ function renderDiffInto(el: HTMLElement, text: string, path: string, openable = 
     frag.appendChild(div);
   }
   el.appendChild(frag);
+}
+
+// A commit as a read-only diff page, opened from the branch menu's commit preview via
+// #commit:<repo>:<hash>. Two ways to look at it, because "what did this commit do" and "how does it
+// differ from where I am" are different questions and both come up when deciding to merge:
+//
+//   vs previous commit - the change the commit itself introduced (git show, i.e. against its parent).
+//                        A root commit has no parent and `show` reports its files as additions.
+//   vs current         - everything between that commit and HEAD, which is what merging it would
+//                        have to reconcile.
+//
+// Rows are not click-to-open: the content shown is a historical revision, not the working-tree file,
+// so jumping to a line in the current file would land somewhere unrelated.
+async function renderCommitPage() {
+  const m = VIEW.match(/^commit:([^:]*):([\s\S]*)$/);
+  let hash = m ? m[2] : '';
+  try { hash = decodeURIComponent(hash); } catch { /* the hash was already decoded */ }
+  let hashRepo = '';
+  if (m && m[1]) { try { hashRepo = decodeURIComponent(m[1]); } catch { hashRepo = m[1]; } }
+  repo = hashRepo || localStorage.getItem('scm.activeRepo') || null;
+  if (!repo) {
+    const info = await api('workbench.projectInfo');
+    projectPath = info.ok && info.data && info.data.path ? info.data.path : null;
+    if (projectPath) {
+      const top = await rawGit(projectPath, 'rev-parse --show-toplevel 2>/dev/null');
+      const root = out(top).split('\n').filter(Boolean).pop() || '';
+      if (top.exitCode === 0 && root) repo = root;
+    }
+  }
+  document.body.className = 'authpage';
+  document.body.innerHTML =
+    '<div class="page pagewide">' +
+    '<div class="page-hd">' + FILE_ICON +
+    '<div style="flex:1;min-width:0"><h1 class="mono difftitle" id="cmTitle"></h1>' +
+    '<div class="sub" id="cmSub">Loading…</div></div></div>' +
+    '<div class="seg cmseg"><button id="cmPrev" class="on">vs previous commit</button>' +
+    '<button id="cmCur">vs current</button></div>' +
+    '<div id="cmFiles" class="sfiles hide"></div>' +
+    '<div id="diffBody" class="diffwrap"><div class="dempty">Loading diff…</div></div>' +
+    '</div>';
+  const titleEl = $('cmTitle'), subEl = $('cmSub');
+  titleEl.textContent = hash;
+  if (!repo) { $('diffBody').innerHTML = '<div class="dempty">This project isn’t a git repository.</div>'; return; }
+
+  const meta = await rawGit(repo, "show -s --pretty=format:'%s%x1f%an%x1f%ar' " + sh(hash));
+  if (meta.exitCode === 0) {
+    const p = out(meta).trim().split('');
+    titleEl.textContent = hash + ' · ' + (p[0] || '');
+    titleEl.title = p[0] || '';
+  }
+
+  let mode: 'prev' | 'cur' = 'prev';
+  const prevBtn = $('cmPrev') as HTMLButtonElement, curBtn = $('cmCur') as HTMLButtonElement;
+
+  async function show() {
+    prevBtn.classList.toggle('on', mode === 'prev');
+    curBtn.classList.toggle('on', mode === 'cur');
+    const diffEl = $('diffBody');
+    diffEl.innerHTML = '<div class="dempty">Loading diff…</div>';
+    const names = mode === 'prev'
+      ? await rawGit(repo!, 'show --name-status --pretty=format: ' + sh(hash), 60000)
+      : await rawGit(repo!, 'diff --name-status ' + sh(hash) + '..HEAD', 60000);
+    const patch = mode === 'prev'
+      ? await rawGit(repo!, 'show --no-color --pretty=format: ' + sh(hash), 60000)
+      : await rawGit(repo!, 'diff --no-color ' + sh(hash) + '..HEAD', 60000);
+    const changed = out(names).split('\n').filter((l) => l.trim()).length;
+    subEl.textContent = (mode === 'prev' ? 'Changes in this commit' : 'Difference from the current branch') +
+      ' · ' + changed + (changed === 1 ? ' file' : ' files');
+    renderStashFiles($('cmFiles'), out(names), diffEl);
+    if (patch.exitCode !== 0) { diffEl.innerHTML = '<div class="dempty">' + escapeHtml(out(patch) || 'Could not read the diff.') + '</div>'; return; }
+    renderDiffInto(diffEl, out(patch), '', false);
+  }
+  prevBtn.onclick = () => { if (mode !== 'prev') { mode = 'prev'; void show(); } };
+  curBtn.onclick = () => { if (mode !== 'cur') { mode = 'cur'; void show(); } };
+  await show();
 }
 
 // A stash's full patch (git stash show -p) as a read-only diff page in the editor area. Opened via the
@@ -2064,6 +2161,8 @@ if (VIEW === 'github') {
   void renderRemotePage();
 } else if (VIEW.indexOf('merge:') === 0) {
   void renderMergePage();
+} else if (VIEW.indexOf('commit:') === 0) {
+  void renderCommitPage();
 } else if (VIEW.indexOf('diff:') === 0) {
   void renderDiffPage();
 } else if (VIEW.indexOf('stash:') === 0) {

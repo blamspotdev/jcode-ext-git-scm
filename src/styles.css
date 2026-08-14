@@ -251,6 +251,14 @@ body.authpage{padding:0;overflow-y:auto}
 /* Commit preview inside a dialog: bounded so five long subjects cannot push the Close button off. */
 .cpv{max-height:min(46vh,340px);overflow:auto;margin-bottom:12px}
 .cpv .empty{padding:10px 2px;color:var(--muted);font-size:13px}
+/* A commit row opens that commit as its own page, so it reads as tappable. */
+.cpv .crow.tap{cursor:pointer}
+.cpv .crow.tap:active{background:var(--panel2)}
+.cpv .cchev{flex:none;color:var(--faint);display:flex;align-items:center}
+/* IC_CHEV carries no intrinsic size, so it has to be given one or it collapses to nothing. */
+.cpv .cchev svg{width:12px;height:12px;display:block}
+/* Commit page: the two ways of reading a commit sit under its header. */
+.cmseg{align-self:flex-start;margin:0 0 10px}
 .btn.dfill{background:var(--del);color:#fff;border:0;font-weight:700}
 .btn.dfill:active{filter:brightness(.92)}
 .btn.danger{color:var(--del);border-color:color-mix(in srgb, var(--del) 40%, var(--line))}
