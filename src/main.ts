@@ -1279,6 +1279,43 @@ function checkoutBranch(name: string) {
     } else go();
   })();
 }
+// A read-only peek at what a branch is carrying, so a checkout or a merge can be decided without
+// leaving the page for the history list. One constant drives both the label and the command, so the
+// menu can never promise a number the log does not return.
+const PREVIEW_COMMITS = 5;
+async function previewCommits(name: string) {
+  const r = await git("log -n " + PREVIEW_COMMITS + " --pretty=format:'%h%x1f%an%x1f%ar%x1f%s' " + sh(name) + ' --');
+  const lines = r.exitCode === 0 ? out(r).split('\n').filter(Boolean) : [];
+  const back = document.createElement('div'); back.className = 'modal-scrim';
+  const dlg = document.createElement('div'); dlg.className = 'modal';
+  dlg.innerHTML = '<div class="modal-title"></div><div class="cpv"></div>' +
+    '<div class="modal-actions"><button class="btn primary" id="__cpvOk">Close</button></div>';
+  (dlg.querySelector('.modal-title') as HTMLElement).textContent = 'Last ' + PREVIEW_COMMITS + ' commits · ' + name;
+  const body = dlg.querySelector('.cpv') as HTMLElement;
+  if (!lines.length) {
+    const e = document.createElement('div'); e.className = 'empty';
+    e.textContent = r.exitCode === 0 ? 'No commits on this branch.' : (out(r) || 'Could not read the log.');
+    body.appendChild(e);
+  } else {
+    // Same row shape as the history list below, so the two read alike.
+    lines.forEach((line) => {
+      const p = line.split('\x1f');
+      const row = document.createElement('div'); row.className = 'crow';
+      const cl = document.createElement('div'); cl.className = 'cline';
+      const h = document.createElement('span'); h.className = 'chash'; h.textContent = p[0] || '';
+      const s = document.createElement('span'); s.className = 'csubj'; s.textContent = p[3] || ''; s.title = p[3] || '';
+      cl.appendChild(h); cl.appendChild(s);
+      const meta = document.createElement('div'); meta.className = 'cmeta'; meta.textContent = (p[1] || '') + ' · ' + (p[2] || '');
+      row.appendChild(cl); row.appendChild(meta);
+      body.appendChild(row);
+    });
+  }
+  back.appendChild(dlg); document.body.appendChild(back);
+  const close = () => back.remove();
+  (dlg.querySelector('#__cpvOk') as HTMLButtonElement).onclick = close;
+  back.onclick = (e) => { if (e.target === back) close(); };
+}
+
 // Merge always asks first: it rewrites the current branch, and on a touch device a menu tap is easy
 // to make by accident. A conflicting merge surfaces in the panel's "Merge Changes" like any other.
 function mergeIntoCurrent(name: string, current: string) {
@@ -1309,7 +1346,8 @@ function localBranchRow(name: string, isCurrent: boolean, upstream: string, trac
   if (isCurrent) { const t = document.createElement('span'); t.className = 'btag'; t.textContent = 'current'; row.appendChild(t); }
   const tr = trackEl(track); if (tr) row.appendChild(tr);
   const act = document.createElement('div'); act.className = 'bact';
-  const items: MenuItem[] = [];
+  // Ordered by consequence: look first, then act, then the destructive one last.
+  const items: MenuItem[] = [{ label: 'Preview last ' + PREVIEW_COMMITS + ' commits', onPick: () => void previewCommits(name) }];
   if (!isCurrent) {
     items.push({ label: 'Checkout', onPick: () => checkoutBranch(name) });
     items.push({ label: 'Merge to current branch', onPick: () => mergeIntoCurrent(name, currentBranch) });
@@ -1335,6 +1373,7 @@ function remoteBranchRow(name: string, current: string, track: string): HTMLElem
   // Remote branches are read-only here — deleting one is destructive and easy to do by accident on a
   // touch device, so it is intentionally not offered.
   act.appendChild(mkMenu([
+    { label: 'Preview last ' + PREVIEW_COMMITS + ' commits', onPick: () => void previewCommits(name) },
     { label: 'Checkout', onPick: () => checkoutBranch(short) },
     { label: 'Merge to current branch', onPick: () => mergeIntoCurrent(name, current) },
   ]));

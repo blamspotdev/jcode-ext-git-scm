@@ -248,6 +248,9 @@ body.authpage{padding:0;overflow-y:auto}
 .modal-input{height:40px;font-size:13px;margin-bottom:14px}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px}
 .modal-actions .btn{height:36px;padding:0 16px}
+/* Commit preview inside a dialog: bounded so five long subjects cannot push the Close button off. */
+.cpv{max-height:min(46vh,340px);overflow:auto;margin-bottom:12px}
+.cpv .empty{padding:10px 2px;color:var(--muted);font-size:13px}
 .btn.dfill{background:var(--del);color:#fff;border:0;font-weight:700}
 .btn.dfill:active{filter:brightness(.92)}
 .btn.danger{color:var(--del);border-color:color-mix(in srgb, var(--del) 40%, var(--line))}
