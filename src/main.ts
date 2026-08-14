@@ -37,7 +37,7 @@ function api(type: string, payload?: unknown): Promise<ApiResult> {
   _onEvent(name: string, json: string) {
     // Only the sidebar surface reloads config; the #github/#manage/#diff editor pages replaced
     // document.body and no longer have the sidebar DOM (#viewToggle, lists), so loadConfig would throw.
-    if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW !== 'clone' && VIEW !== 'remoteRepo' && VIEW.indexOf('diff:') !== 0 && VIEW.indexOf('merge:') !== 0 && VIEW.indexOf('stash:') !== 0) {
+    if (name === 'config' && VIEW !== 'github' && VIEW !== 'manage' && VIEW !== 'clone' && VIEW !== 'remoteRepo' && VIEW.indexOf('diff:') !== 0 && VIEW.indexOf('merge:') !== 0 && VIEW.indexOf('stash:') !== 0 && VIEW.indexOf('commit:') !== 0) {
       void loadConfig().then(renderLists);
     }
     // The sidebar surface (also booted headless by the app as the decorations host) reacts to disk
@@ -93,8 +93,10 @@ const GITP = "git -c safe.directory='*' -c core.quotePath=false -c core.createOb
 const rawGit = (workdir: string, args: string, t?: number) => exec(GITP + args, { workdir, timeoutMs: t });
 const git = (args: string, t?: number) => exec(GITP + args, { workdir: repo, timeoutMs: t });
 
-// Git command output / status messages surface in a dismissible dialog rather than an inline panel
-// log, so multi-line output (init, push/pull, errors) doesn't shove the SCM content around.
+// A dialog reports PROBLEMS — a failed command, or something the user has to supply before one can
+// run. Success is reported by the panel itself changing: the file lists empty out, the ahead/behind
+// badge resets, the stash list grows. Popping "Pushed." over a push that plainly worked is a modal
+// interruption carrying no information, so routine successes stay silent.
 let logDlg: HTMLElement | null = null;
 function logHide() { if (logDlg) { logDlg.remove(); logDlg = null; } }
 function logShow(t: string) {
@@ -111,6 +113,22 @@ function logShow(t: string) {
   (document.getElementById('__logOk') as HTMLButtonElement).onclick = logHide;
   back.onclick = (e) => { if (e.target === back) logHide(); };
 }
+// Fetch / pull / push talk to a remote, so on a phone connection they can sit there for many seconds.
+// Greying the buttons out is not enough feedback — the panel just looks frozen — so cover it with a
+// scrim carrying a spinner and the operation's name for as long as it runs. Its z-index sits BELOW
+// the modal's, so an error dialog raised afterwards is never trapped underneath.
+let progEl: HTMLElement | null = null;
+function progressShow(label: string) {
+  progressHide();
+  const el = document.createElement('div');
+  el.className = 'prog-scrim';
+  el.innerHTML = '<div class="prog"><span class="prog-spin"></span><span class="prog-lbl"></span></div>';
+  (el.querySelector('.prog-lbl') as HTMLElement).textContent = label;
+  document.body.appendChild(el);
+  progEl = el;
+}
+function progressHide() { if (progEl) { progEl.remove(); progEl = null; } }
+
 function setBranch(t: string) { $('branchName').textContent = t; }
 // The branch switcher, fetch/pull/push and the tree/list toggle only make sense once a repository
 // exists. They stay hidden in the no-project / no-git / no-repo states so the toolbar can't drive git
@@ -357,7 +375,9 @@ async function addToGitignore(guestPath: string, isDirectory: boolean) {
   if (repo === target && !busy) void refreshStatus();
 }
 
-async function doInit() { setBusy(true); const r = await git('init', 30000); if (out(r)) logShow(out(r)); setBusy(false); bootP = boot(); }
+// Error-only: on success git prints "Initialized empty Git repository in …", and the panel switching
+// from the no-repo empty state to the file lists already says that.
+async function doInit() { setBusy(true); const r = await git('init', 30000); if (r.exitCode !== 0) logShow(out(r) || 'Could not initialise a repository.'); setBusy(false); bootP = boot(); }
 async function refreshAll() { await Promise.all([refreshStatus(), refreshBranches(), refreshStashes(), refreshGh()]); }
 
 // ---- config (Phase: generic extension settings; graceful fallback to localStorage) ----
@@ -617,11 +637,21 @@ function folderRow(label: string, key: string, depth: number, closed: boolean): 
 }
 
 // ---- actions ----
-async function run(cmd: () => Promise<ExecResult>, done?: (r: ExecResult, text: string) => void | Promise<void>) {
+// [progress] shows the overlay under that label while the command runs. [quiet] suppresses the
+// automatic failure dialog for callers that inspect the failure themselves — push does, because a
+// first push failing for "no upstream branch" is not a problem to report, just a retry with -u.
+type RunOpts = { progress?: string; quiet?: boolean };
+async function run(
+  cmd: () => Promise<ExecResult>,
+  done?: (r: ExecResult, text: string) => void | Promise<void>,
+  opts?: RunOpts,
+) {
   setBusy(true); logHide();
+  if (opts?.progress) progressShow(opts.progress);
   const r = await cmd();
   const text = out(r);
-  if (r.exitCode !== 0 && text) logShow(text);
+  progressHide();
+  if (r.exitCode !== 0 && text && !opts?.quiet) logShow(text);
   setBusy(false);
   if (done) await done(r, text);
 }
@@ -697,9 +727,10 @@ function stashChanges() {
     confirmLabel: 'Stash',
     onConfirm: (value) => {
       const msg = (value || '').trim();
-      void run(() => git('stash push --include-untracked' + (msg ? ' -m ' + sh(msg) : '')), async (r, text) => {
+      // Silent on success: the changes leaving the file lists and the new entry appearing under
+      // Stashes say it happened.
+      void run(() => git('stash push --include-untracked' + (msg ? ' -m ' + sh(msg) : '')), async (r) => {
         if (r.exitCode !== 0) return;
-        logShow(text || 'Changes stashed.');
         await refreshStatus();
         await refreshStashes();
       });
@@ -890,13 +921,23 @@ function createBranch() {
 // ---- sync ----
 // Fetch is a passive sync — succeed silently (any incoming commits surface via the ahead/behind badge);
 // run() already surfaces errors.
-const fetch_ = () => run(() => git('fetch --all --prune', 120000), async () => { await refreshStatus(); await refreshBranches(); });
+const fetch_ = () => run(
+  () => git('fetch --all --prune', 120000),
+  async () => { await refreshStatus(); await refreshBranches(); },
+  { progress: 'Fetching…' },
+);
 // A plain `git pull` aborts when uncommitted local changes would be overwritten by the incoming
 // merge/rebase (leaving the user stuck on the raw git error). Detect that and offer to stash-pull-reapply
 // via `--autostash`, so incoming changes land without losing local work; if the re-apply conflicts the
 // files surface in "Merge Changes" like any other conflict.
 const PULL_DIRTY_RE = /would be overwritten|commit your changes or stash them|cannot pull with rebase|you have unstaged changes|not uptodate/i;
-const pullAutostash = () => run(() => git('pull --autostash', 180000), async (_r, t) => { logShow(t || 'Up to date.'); await refreshStatus(); await refreshBranches(); });
+const pullAutostash = () => run(
+  () => git('pull --autostash', 180000),
+  async () => { await refreshStatus(); await refreshBranches(); },
+  { progress: 'Pulling…' },
+);
+// quiet, because the dirty-tree failure below is answered with an offer rather than an error dump;
+// anything else still reaches the dialog through the explicit logShow.
 const pull = () => run(() => git('pull', 180000), async (r, t) => {
   if (r.exitCode !== 0 && PULL_DIRTY_RE.test(t)) {
     showModal({
@@ -907,17 +948,25 @@ const pull = () => run(() => git('pull', 180000), async (r, t) => {
     });
     return;
   }
-  logShow(t || 'Up to date.'); await refreshStatus(); await refreshBranches();
-});
+  if (r.exitCode !== 0) { logShow(t || 'Pull failed.'); return; }
+  await refreshStatus(); await refreshBranches();
+}, { progress: 'Pulling…', quiet: true });
 async function push() {
   await run(() => git('push', 180000), async (r, text) => {
-    if (r.exitCode === 0) { logShow(text || 'Pushed.'); await refreshStatus(); return; }
+    if (r.exitCode === 0) { await refreshStatus(); return; }
+    // A branch that has never been pushed fails with "no upstream branch". That is not a problem to
+    // report — it just needs -u — so retry silently and only surface something if the retry fails.
     if (/has no upstream branch|set-upstream/i.test(text)) {
       const b = out(await git('rev-parse --abbrev-ref HEAD')).trim();
+      setBusy(true); progressShow('Pushing…');
       const r2 = await git('push -u origin ' + sh(b), 180000);
-      logShow(out(r2) || 'Pushed.'); await refreshStatus(); await refreshBranches();
+      progressHide(); setBusy(false);
+      if (r2.exitCode !== 0) { logShow(out(r2) || 'Push failed.'); return; }
+      await refreshStatus(); await refreshBranches();
+      return;
     }
-  });
+    logShow(text || 'Push failed.');
+  }, { progress: 'Pushing…', quiet: true });
 }
 
 // ---- GitHub state indicator (dot on the drawer header; sign-in + identity live on the auth page) ----
@@ -1018,6 +1067,8 @@ async function authSaveIdentity() {
 // ---- Git manage page (branches + history), opened in the editor via workbench.openView #manage ----
 const BRANCH_ICON = '<svg viewBox="0 0 16 16" width="24" height="24"><path fill="currentColor" d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6A2.5 2.5 0 0110 8.5H6a1 1 0 00-1 1v1.128a2.251 2.251 0 11-1.5 0V5.372a2.25 2.25 0 111.5 0v1.836A2.492 2.492 0 016 7h4a1 1 0 001-1v-.628A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z"></path></svg>';
 let manageTab: 'local' | 'remote' = 'local';
+// The branch a merge would land on. Held here so a row's menu can name it without re-reading HEAD.
+let currentBranch = '';
 
 async function renderManagePage() {
   const info = await api('workbench.projectInfo');
@@ -1064,23 +1115,118 @@ async function refreshManage() {
   await renderBranchList(cur);
   await renderCommits();
 }
+// A remote ref has no upstream of its own, so its incoming/outgoing is measured against HEAD — "how
+// far is origin/main from where I am". That needs one rev-list per row, so it is bounded; past the
+// cap the rows still render, just without counts.
+const REMOTE_TRACK_CAP = 40;
+async function remoteTrack(ref: string): Promise<string> {
+  const r = await git('rev-list --left-right --count HEAD...' + sh(ref));
+  const m = /^(\d+)\s+(\d+)/.exec(out(r).trim());
+  if (!m) return '';
+  const ahead = Number(m[1]), behind = Number(m[2]);   // left = ours, right = theirs
+  if (!ahead && !behind) return '';
+  return '[' + (ahead ? 'ahead ' + ahead : '') + (ahead && behind ? ', ' : '') + (behind ? 'behind ' + behind : '') + ']';
+}
+
 async function renderBranchList(cur?: string) {
   const current = cur ?? out(await git('rev-parse --abbrev-ref HEAD')).trim();
+  currentBranch = current;
   const list = $('mBranchList'); list.innerHTML = '';
   if (manageTab === 'local') {
-    const r = await git("branch --format='%(refname:short)%09%(HEAD)%09%(upstream:short)'");
+    // %(upstream:track) carries the ahead/behind counts, so the whole list costs this one command.
+    const r = await git("branch --format='%(refname:short)%09%(HEAD)%09%(upstream:short)%09%(upstream:track)'");
     const lines = out(r).split('\n').map((s) => s.trim()).filter(Boolean);
     if (!lines.length) { list.innerHTML = '<div class="empty">No local branches.</div>'; return; }
-    lines.forEach((line) => { const p = line.split('\t'); list.appendChild(localBranchRow(p[0], p[1] === '*', p[2] || '')); });
+    lines.forEach((line) => { const p = line.split('\t'); list.appendChild(localBranchRow(p[0], p[1] === '*', p[2] || '', p[3] || '')); });
   } else {
     const r = await git("branch -r --format='%(refname:short)'");
     const names = out(r).split('\n').map((s) => s.trim()).filter(Boolean).filter((n) => n.indexOf('/HEAD') < 0);
     if (!names.length) { list.innerHTML = '<div class="empty">No remote branches — Fetch to update.</div>'; return; }
-    names.forEach((n) => list.appendChild(remoteBranchRow(n, current)));
+    const tracks = await Promise.all(names.map((n, i) => (i < REMOTE_TRACK_CAP ? remoteTrack(n) : Promise.resolve(''))));
+    names.forEach((n, i) => list.appendChild(remoteBranchRow(n, current, tracks[i])));
   }
 }
 function mkBtn(label: string, cls: string, fn: () => void): HTMLButtonElement {
   const b = document.createElement('button'); b.className = cls; b.textContent = label; b.onclick = fn; return b;
+}
+
+const IC_DOTS = '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor">' +
+  '<circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/></svg>';
+
+// One overflow menu per branch row. A row can offer five actions, and five labelled buttons do not
+// fit a phone-width row beside the branch name — so the row keeps its name, its tracking counts and
+// a single dots button, and the actions live behind it.
+//
+// The manage page rebuilds document.body, so it cannot reuse the panel's fixed popup elements; this
+// builds its own and anchors it to the button that opened it.
+type MenuItem = { label: string; danger?: boolean; onPick: () => void };
+let rowMenu: HTMLElement | null = null;
+function closeRowMenu() { if (rowMenu) { rowMenu.remove(); rowMenu = null; } }
+function mkMenu(items: MenuItem[]): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.className = 'bdots'; b.type = 'button'; b.title = 'Branch actions';
+  b.setAttribute('aria-label', 'Branch actions');
+  b.innerHTML = IC_DOTS;
+  b.onclick = (e) => {
+    e.stopPropagation();
+    const wasOpen = rowMenu !== null;
+    closeRowMenu();
+    if (wasOpen) return;             // tapping the same button again just closes it
+    const scrim = document.createElement('div'); scrim.className = 'menu-scrim';
+    const menu = document.createElement('div'); menu.className = 'bmenu';
+    items.forEach((it) => {
+      const mi = document.createElement('button');
+      mi.className = 'bmi' + (it.danger ? ' danger' : '');
+      mi.textContent = it.label;
+      mi.onclick = () => { closeRowMenu(); it.onPick(); };
+      menu.appendChild(mi);
+    });
+    scrim.appendChild(menu);
+    document.body.appendChild(scrim);
+    rowMenu = scrim;
+    // Anchored under the button, then pulled back inside the viewport — a row near the bottom of a
+    // long branch list would otherwise open its menu off-screen.
+    const r = b.getBoundingClientRect();
+    let left = r.right - menu.offsetWidth;
+    if (left < 8) left = 8;
+    let top = r.bottom + 6;
+    if (top + menu.offsetHeight > window.innerHeight - 8) top = Math.max(8, r.top - menu.offsetHeight - 6);
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    scrim.onclick = (ev) => { if (ev.target === scrim) closeRowMenu(); };
+  };
+  return b;
+}
+
+// Incoming / outgoing counts for a branch. `git for-each-ref`'s %(upstream:track) already carries
+// them for a local branch — "[ahead 2, behind 3]", "[behind 1]", "[gone]" or empty — so the whole
+// list costs one command rather than a rev-list per row.
+function trackEl(track: string): HTMLElement | null {
+  const t = (track || '').trim();
+  if (!t) return null;
+  const wrap = document.createElement('span'); wrap.className = 'btrack';
+  if (t === '[gone]') {
+    const g = document.createElement('span'); g.className = 'bgone'; g.textContent = 'gone';
+    g.title = 'The upstream branch no longer exists';
+    wrap.appendChild(g);
+    return wrap;
+  }
+  const behind = /behind (\d+)/.exec(t);
+  const ahead = /ahead (\d+)/.exec(t);
+  if (!behind && !ahead) return null;
+  if (behind) {
+    const s = document.createElement('span'); s.className = 'bin';
+    s.textContent = '↓' + behind[1];
+    s.title = behind[1] + ' incoming (behind upstream)';
+    wrap.appendChild(s);
+  }
+  if (ahead) {
+    const s = document.createElement('span'); s.className = 'bout';
+    s.textContent = '↑' + ahead[1];
+    s.title = ahead[1] + ' outgoing (ahead of upstream)';
+    wrap.appendChild(s);
+  }
+  return wrap;
 }
 // Modal dialog (confirm / simple form) — built in-page because WebView confirm()/prompt() are no-ops.
 function showModal(opts: { title: string; body?: string; input?: { value: string; placeholder?: string }; confirmLabel: string; danger?: boolean; onConfirm: (value?: string) => void }) {
@@ -1101,22 +1247,22 @@ function showModal(opts: { title: string; body?: string; input?: { value: string
   back.onclick = (e) => { if (e.target === back) close(); };
   if (inp) inp.onkeydown = (e) => { if (e.key === 'Enter') ok(); };
 }
-function mkDelete(cmd: () => Promise<ExecResult>, name: string): HTMLButtonElement {
-  return mkBtn('Delete', 'btn ghost danger', () => showModal({
+function deleteBranch(cmd: () => Promise<ExecResult>, name: string) {
+  showModal({
     title: 'Delete branch',
     body: 'Delete <b>' + escapeHtml(name) + '</b>? This can’t be undone.',
     confirmLabel: 'Delete', danger: true,
     onConfirm: () => manageRun(cmd, 'Deleted ' + name),
-  }));
+  });
 }
-function mkRename(oldName: string): HTMLButtonElement {
-  return mkBtn('Rename', 'btn ghost', () => showModal({
+function renameBranch(oldName: string) {
+  showModal({
     title: 'Rename branch',
     body: 'Rename <b>' + escapeHtml(oldName) + '</b> to:',
     input: { value: oldName, placeholder: 'branch name' },
     confirmLabel: 'Rename',
     onConfirm: (v) => { const nn = (v || '').trim(); if (!nn || nn === oldName) return; void manageRun(() => git('branch -m ' + sh(oldName) + ' ' + sh(nn)), 'Renamed to ' + nn); },
-  }));
+  });
 }
 // Checkout — warn first if the working tree is dirty (uncommitted/staged), else switch directly.
 function checkoutBranch(name: string) {
@@ -1133,35 +1279,136 @@ function checkoutBranch(name: string) {
     } else go();
   })();
 }
-function localBranchRow(name: string, isCurrent: boolean, upstream: string): HTMLElement {
+// A read-only peek at what a branch is carrying, so a checkout or a merge can be decided without
+// leaving the page for the history list. One constant drives both the label and the command, so the
+// menu can never promise a number the log does not return.
+const PREVIEW_COMMITS = 5;
+
+
+// The branch's recent commits, as a list. Tapping one opens that commit as its own editor page
+// (renderCommitPage) rather than drilling in here — a commit's diff wants the full width and its own
+// scroll, which a dialog over the branch list cannot give it.
+async function previewCommits(name: string) {
+  const scrim = document.createElement('div'); scrim.className = 'modal-scrim';
+  const dlg = document.createElement('div'); dlg.className = 'modal';
+  dlg.innerHTML =
+    '<div class="modal-title"></div><div class="cpv" id="__cpvBody"></div>' +
+    '<div class="modal-actions"><button class="btn primary" id="__cpvOk">Close</button></div>';
+  (dlg.querySelector('.modal-title') as HTMLElement).textContent = 'Last ' + PREVIEW_COMMITS + ' commits · ' + name;
+  scrim.appendChild(dlg); document.body.appendChild(scrim);
+  const body = dlg.querySelector('#__cpvBody') as HTMLElement;
+  const close = () => scrim.remove();
+  (dlg.querySelector('#__cpvOk') as HTMLButtonElement).onclick = close;
+  scrim.onclick = (e) => { if (e.target === scrim) close(); };
+
+  const r = await git("log -n " + PREVIEW_COMMITS + " --pretty=format:'%h%x1f%an%x1f%ar%x1f%s' " + sh(name) + ' --');
+  const lines = r.exitCode === 0 ? out(r).split('\n').filter(Boolean) : [];
+  if (!lines.length) {
+    const e = document.createElement('div'); e.className = 'empty';
+    e.textContent = r.exitCode === 0 ? 'No commits on this branch.' : (out(r) || 'Could not read the log.');
+    body.appendChild(e);
+    return;
+  }
+  // Same row shape as the history list below, so the two read alike - plus a chevron, because a row
+  // that opens something on tap should look like it does.
+  lines.forEach((line) => {
+    const p = line.split('');
+    const hash = p[0] || '', subject = p[3] || '';
+    const row = document.createElement('div'); row.className = 'crow tap';
+    const cl = document.createElement('div'); cl.className = 'cline';
+    const h = document.createElement('span'); h.className = 'chash'; h.textContent = hash;
+    const su = document.createElement('span'); su.className = 'csubj'; su.textContent = subject; su.title = subject;
+    const c = document.createElement('span'); c.className = 'cchev'; c.innerHTML = IC_CHEV;
+    cl.appendChild(h); cl.appendChild(su); cl.appendChild(c);
+    const meta = document.createElement('div'); meta.className = 'cmeta'; meta.textContent = (p[1] || '') + ' · ' + (p[2] || '');
+    row.appendChild(cl); row.appendChild(meta);
+    row.onclick = () => { close(); openCommit(hash); };
+    body.appendChild(row);
+  });
+}
+
+// commit:<repo>:<hash> - the repo travels in the hash because the page opens standalone and cannot
+// see this sidebar's in-memory `repo` (wrong repo in a multi-repo workspace otherwise).
+function openCommit(hash: string) {
+  const r = repo ? encodeURIComponent(repo) : '';
+  void api('workbench.openView', {
+    view: 'commit:' + r + ':' + encodeURIComponent(hash),
+    title: hash + ' — commit',
+  });
+}
+
+// Merge always asks first: it rewrites the current branch, and on a touch device a menu tap is easy
+// to make by accident. A conflicting merge surfaces in the panel's "Merge Changes" like any other.
+function mergeIntoCurrent(name: string, current: string) {
+  showModal({
+    title: 'Merge branch',
+    body: 'Merge <b>' + escapeHtml(name) + '</b> into <b>' + escapeHtml(current) + '</b>?',
+    confirmLabel: 'Merge',
+    onConfirm: () => { void manageRun(() => git('merge ' + sh(name), 180000), 'Merged ' + name, 'Merging…'); },
+  });
+}
+
+// Pull on the CURRENT branch is a plain pull. On any other local branch git can fast-forward the ref
+// straight from its upstream without a working-tree switch, which is what `fetch <remote> <src>:<dst>`
+// does; git refuses rather than merging if it is not a fast-forward, which is the safe outcome here.
+function pullBranch(name: string, isCurrent: boolean, upstream: string) {
+  if (isCurrent) { void manageRun(() => git('pull', 180000), 'Pulled ' + name, 'Pulling…'); return; }
+  const slash = upstream.indexOf('/');
+  const remote = slash >= 0 ? upstream.slice(0, slash) : 'origin';
+  const rb = slash >= 0 ? upstream.slice(slash + 1) : name;
+  void manageRun(() => git('fetch ' + sh(remote) + ' ' + sh(rb) + ':' + sh(name), 180000), 'Updated ' + name, 'Pulling…');
+}
+
+function localBranchRow(name: string, isCurrent: boolean, upstream: string, track: string): HTMLElement {
   const row = document.createElement('div'); row.className = 'brow';
   const nm = document.createElement('span'); nm.className = 'bname' + (isCurrent ? ' cur' : ''); nm.textContent = name; nm.title = name;
   row.appendChild(nm);
   if (upstream) { const u = document.createElement('span'); u.className = 'bup'; u.textContent = upstream; row.appendChild(u); }
   if (isCurrent) { const t = document.createElement('span'); t.className = 'btag'; t.textContent = 'current'; row.appendChild(t); }
+  const tr = trackEl(track); if (tr) row.appendChild(tr);
   const act = document.createElement('div'); act.className = 'bact';
-  if (!isCurrent) act.appendChild(mkBtn('Checkout', 'btn ghost', () => checkoutBranch(name)));
-  act.appendChild(mkRename(name));
-  if (!isCurrent) act.appendChild(mkDelete(() => git('branch -D ' + sh(name)), name));
+  const items: MenuItem[] = [];
+  if (!isCurrent) {
+    items.push({ label: 'Checkout', onPick: () => checkoutBranch(name) });
+    items.push({ label: 'Merge to current branch', onPick: () => mergeIntoCurrent(name, currentBranch) });
+  }
+  // Without an upstream there is nothing to pull from, so the entry is left out rather than offered
+  // and then failing.
+  if (isCurrent || upstream) items.push({ label: 'Pull', onPick: () => pullBranch(name, isCurrent, upstream) });
+  items.push({ label: 'Rename', onPick: () => renameBranch(name) });
+  if (!isCurrent) items.push({ label: 'Delete', danger: true, onPick: () => deleteBranch(() => git('branch -D ' + sh(name)), name) });
+  // Last: it is the one entry that only looks, so it sits out of the way of the actions.
+  items.push({ label: 'Preview last ' + PREVIEW_COMMITS + ' commits', onPick: () => void previewCommits(name) });
+  act.appendChild(mkMenu(items));
   row.appendChild(act);
   return row;
 }
-function remoteBranchRow(name: string, current: string): HTMLElement {
+
+function remoteBranchRow(name: string, current: string, track: string): HTMLElement {
   const slash = name.indexOf('/');
   const short = slash >= 0 ? name.slice(slash + 1) : name;
   const row = document.createElement('div'); row.className = 'brow';
   const nm = document.createElement('span'); nm.className = 'bname' + (short === current ? ' cur' : ''); nm.textContent = name; nm.title = name;
   row.appendChild(nm);
+  const tr = trackEl(track); if (tr) row.appendChild(tr);
   const act = document.createElement('div'); act.className = 'bact';
-  // Remote branches are checkout-only — deleting a remote branch is destructive and easy to do by
-  // accident on a touch device, so it's intentionally not offered here.
-  act.appendChild(mkBtn('Checkout', 'btn ghost', () => checkoutBranch(short)));
+  // Remote branches are read-only here — deleting one is destructive and easy to do by accident on a
+  // touch device, so it is intentionally not offered.
+  act.appendChild(mkMenu([
+    { label: 'Checkout', onPick: () => checkoutBranch(short) },
+    { label: 'Merge to current branch', onPick: () => mergeIntoCurrent(name, current) },
+    { label: 'Preview last ' + PREVIEW_COMMITS + ' commits', onPick: () => void previewCommits(name) },
+  ]));
   row.appendChild(act);
   return row;
 }
-async function manageRun(cmd: () => Promise<ExecResult>, okMsg: string) {
+// [progress] raises the overlay for the operations that reach the network (pull, merge of a remote
+// ref). The inline status line still carries the outcome, so success needs no dialog here either.
+async function manageRun(cmd: () => Promise<ExecResult>, okMsg: string, progress?: string) {
   mMsg('Working…');
+  if (progress) progressShow(progress);
   const r = await cmd();
+  if (progress) progressHide();
   if (r.exitCode === 0) { mMsg(okMsg); await refreshManage(); }
   else { mMsg(out(r) || 'Failed.', true); await renderBranchList(); }
 }
@@ -1277,10 +1524,137 @@ function renderDiffInto(el: HTMLElement, text: string, path: string, openable = 
     const g = document.createElement('span'); g.className = 'ln'; g.textContent = gutter;
     const c = document.createElement('span'); c.className = 'code'; c.textContent = line || ' ';
     div.appendChild(g); div.appendChild(c);
-    if (openable && openLn > 0 && kind !== 'meta') { div.classList.add('tap'); div.title = 'Open at line ' + openLn; div.onclick = () => openFileAt(path, openLn); }
+    if (openable && openLn > 0 && kind !== 'meta') {
+      div.classList.add('tap');
+      div.title = 'Open at line ' + openLn;
+      // Now that diff text is selectable, releasing a selection drag on a row also fires a click.
+      // Opening the file mid-selection would throw the selection away, so a click that ends with
+      // text selected is treated as the selection it was.
+      div.onclick = () => {
+        if ((window.getSelection()?.toString() || '').length) return;
+        openFileAt(path, openLn);
+      };
+    }
     frag.appendChild(div);
   }
   el.appendChild(frag);
+}
+
+// A commit as a read-only diff page, opened from the branch menu's commit preview via
+// #commit:<repo>:<hash>. Two ways to look at it, because "what did this commit do" and "how does it
+// differ from where I am" are different questions and both come up when deciding to merge:
+//
+//   vs previous commit - the change the commit itself introduced (git show, i.e. against its parent).
+//                        A root commit has no parent and `show` reports its files as additions.
+//   vs current         - everything between that commit and HEAD, which is what merging it would
+//                        have to reconcile.
+//
+// Rows are not click-to-open: the content shown is a historical revision, not the working-tree file,
+// so jumping to a line in the current file would land somewhere unrelated.
+async function renderCommitPage() {
+  const m = VIEW.match(/^commit:([^:]*):([\s\S]*)$/);
+  let hash = m ? m[2] : '';
+  try { hash = decodeURIComponent(hash); } catch { /* the hash was already decoded */ }
+  let hashRepo = '';
+  if (m && m[1]) { try { hashRepo = decodeURIComponent(m[1]); } catch { hashRepo = m[1]; } }
+  repo = hashRepo || localStorage.getItem('scm.activeRepo') || null;
+  if (!repo) {
+    const info = await api('workbench.projectInfo');
+    projectPath = info.ok && info.data && info.data.path ? info.data.path : null;
+    if (projectPath) {
+      const top = await rawGit(projectPath, 'rev-parse --show-toplevel 2>/dev/null');
+      const root = out(top).split('\n').filter(Boolean).pop() || '';
+      if (top.exitCode === 0 && root) repo = root;
+    }
+  }
+  document.body.className = 'authpage';
+  document.body.innerHTML =
+    '<div class="page pagewide">' +
+    '<div class="page-hd">' + FILE_ICON +
+    '<div style="flex:1;min-width:0"><h1 class="mono difftitle" id="cmTitle"></h1>' +
+    '<div class="sub" id="cmSub">Loading…</div></div></div>' +
+    '<div class="seg cmseg"><button id="cmPrev" class="on">vs previous commit</button>' +
+    '<button id="cmCur">vs current</button></div>' +
+    '<div id="cmFiles" class="cmfiles"><div class="dempty">Loading…</div></div>' +
+    '</div>';
+  const titleEl = $('cmTitle'), subEl = $('cmSub'), listEl = $('cmFiles');
+  titleEl.textContent = hash;
+  if (!repo) { listEl.innerHTML = '<div class="dempty">This project isn’t a git repository.</div>'; return; }
+
+  const meta = await rawGit(repo, "show -s --pretty=format:'%s%x1f%an%x1f%ar' " + sh(hash));
+  if (meta.exitCode === 0) {
+    const p = out(meta).trim().split('');
+    titleEl.textContent = hash + ' · ' + (p[0] || '');
+    titleEl.title = p[0] || '';
+  }
+
+  let mode: 'prev' | 'cur' = 'prev';
+  const prevBtn = $('cmPrev') as HTMLButtonElement, curBtn = $('cmCur') as HTMLButtonElement;
+
+  async function show() {
+    prevBtn.classList.toggle('on', mode === 'prev');
+    curBtn.classList.toggle('on', mode === 'cur');
+    listEl.innerHTML = '<div class="dempty">Loading…</div>';
+    const names = mode === 'prev'
+      ? await rawGit(repo!, 'show --name-status --pretty=format: ' + sh(hash), 60000)
+      : await rawGit(repo!, 'diff --name-status ' + sh(hash) + '..HEAD', 60000);
+    if (names.exitCode !== 0) {
+      subEl.textContent = '';
+      listEl.innerHTML = '<div class="dempty">' + escapeHtml(out(names) || 'Could not read the commit.') + '</div>';
+      return;
+    }
+    const files: { status: string; path: string }[] = [];
+    for (const line of out(names).split('\n')) {
+      if (!line.trim()) continue;
+      const parts = line.split('\t');
+      const status = (parts[0] || '').trim();
+      // A rename reports "R100<TAB>old<TAB>new", so the path is the LAST field.
+      const path = (status[0] === 'R' || status[0] === 'C') ? parts[parts.length - 1] : parts[1];
+      if (path) files.push({ status: status[0] === '?' ? 'A' : status[0], path });
+    }
+    subEl.textContent = (mode === 'prev' ? 'Changes in this commit' : 'Difference from the current branch') +
+      ' · ' + files.length + (files.length === 1 ? ' file' : ' files');
+    if (!files.length) { listEl.innerHTML = '<div class="dempty">No file changes.</div>'; return; }
+
+    listEl.innerHTML = '';
+    files.forEach((f) => {
+      const row = document.createElement('div'); row.className = 'cfile';
+      const hd = document.createElement('div'); hd.className = 'cfile-hd';
+      const chev = document.createElement('span'); chev.className = 'cfile-chev'; chev.innerHTML = IC_CHEV;
+      const st = document.createElement('span'); st.className = 'st ' + f.status; st.textContent = f.status;
+      const nm = document.createElement('span'); nm.className = 'cfile-nm'; nm.textContent = f.path; nm.title = f.path;
+      hd.appendChild(chev); hd.appendChild(st); hd.appendChild(nm);
+      const bodyEl = document.createElement('div'); bodyEl.className = 'cfile-body hide';
+      row.appendChild(hd); row.appendChild(bodyEl);
+      // Each file's patch is fetched the first time that file is opened, not up front. The commit
+      // that scaffolded this repo touches 93 files; rendering every patch to read one of them is a
+      // second of work thrown away, and it buries the list the user came here to scan.
+      let loaded = false;
+      hd.onclick = async () => {
+        const opening = bodyEl.classList.contains('hide');
+        bodyEl.classList.toggle('hide', !opening);
+        row.classList.toggle('open', opening);
+        if (!opening || loaded) return;
+        loaded = true;
+        bodyEl.innerHTML = '<div class="dempty">Loading diff…</div>';
+        const patch = mode === 'prev'
+          ? await rawGit(repo!, 'show --no-color --pretty=format: ' + sh(hash) + ' -- ' + sh(f.path), 60000)
+          : await rawGit(repo!, 'diff --no-color ' + sh(hash) + '..HEAD -- ' + sh(f.path), 60000);
+        if (patch.exitCode !== 0) {
+          bodyEl.innerHTML = '<div class="dempty">' + escapeHtml(out(patch) || 'Could not read the diff.') + '</div>';
+          return;
+        }
+        const wrap = document.createElement('div'); wrap.className = 'diffwrap cfile-diff';
+        bodyEl.innerHTML = '';
+        bodyEl.appendChild(wrap);
+        renderDiffInto(wrap, out(patch), '', false);
+      };
+      listEl.appendChild(row);
+    });
+  }
+  prevBtn.onclick = () => { if (mode !== 'prev') { mode = 'prev'; void show(); } };
+  curBtn.onclick = () => { if (mode !== 'cur') { mode = 'cur'; void show(); } };
+  await show();
 }
 
 // A stash's full patch (git stash show -p) as a read-only diff page in the editor area. Opened via the
@@ -1839,6 +2213,8 @@ if (VIEW === 'github') {
   void renderRemotePage();
 } else if (VIEW.indexOf('merge:') === 0) {
   void renderMergePage();
+} else if (VIEW.indexOf('commit:') === 0) {
+  void renderCommitPage();
 } else if (VIEW.indexOf('diff:') === 0) {
   void renderDiffPage();
 } else if (VIEW.indexOf('stash:') === 0) {

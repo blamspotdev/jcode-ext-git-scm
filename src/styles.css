@@ -209,10 +209,36 @@ body.authpage{padding:0;overflow-y:auto}
 .mlist .brow .bup{font-size:11px;color:var(--faint);font-family:ui-monospace,monospace;flex:none}
 .mlist .brow .btag{font-size:10px;color:var(--faint);flex:none}
 .mlist .brow .bact{display:flex;gap:6px;align-items:center;flex:none}
+/* Incoming / outgoing against the branch's upstream (or against HEAD for a remote ref). */
+.mlist .brow .btrack{display:flex;gap:5px;align-items:center;flex:none;font-size:11px;
+  font-family:ui-monospace,monospace;font-weight:600}
+.mlist .brow .btrack .bin{color:var(--accent)}
+.mlist .brow .btrack .bout{color:var(--add)}
+.mlist .brow .btrack .bgone{color:var(--faint);font-weight:500}
+/* Icon-only overflow button: five actions will not fit a phone-width row as labelled buttons. */
+.bdots{display:flex;align-items:center;justify-content:center;width:30px;height:30px;flex:none;
+  padding:0;border:0;border-radius:7px;background:transparent;color:var(--muted);cursor:pointer}
+.bdots:active{background:var(--line)}
+.menu-scrim{position:fixed;inset:0;z-index:55}
+.bmenu{position:fixed;min-width:190px;background:var(--panel);border:1px solid var(--line2);
+  border-radius:10px;padding:4px;box-shadow:0 14px 36px rgba(0,0,0,.5)}
+.bmi{display:block;width:100%;text-align:left;background:transparent;border:0;border-radius:7px;
+  padding:9px 10px;font-size:13px;color:var(--fg);cursor:pointer}
+.bmi:active{background:var(--line)}
+.bmi.danger{color:var(--del)}
 .mlist .brow .bact .btn{height:28px;padding:0 10px;font-size:12px}
 .mlist .brow .bact .muted{font-size:11.5px}
 
 /* modal dialog (confirm / form) */
+/* Progress overlay for the remote operations (fetch / pull / push). z-index sits below .modal-scrim
+   so a failure dialog raised after the overlay clears is never covered by a stale one. */
+.prog-scrim{position:fixed;inset:0;z-index:45;background:color-mix(in srgb, var(--bg) 55%, transparent);
+  display:flex;align-items:center;justify-content:center}
+.prog{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line2);
+  border-radius:10px;padding:12px 16px;box-shadow:0 12px 32px rgba(0,0,0,.45)}
+.prog-spin{width:15px;height:15px;flex:none;border-radius:50%;border:2px solid var(--line2);
+  border-top-color:var(--accent);animation:genspin .8s linear infinite}
+.prog-lbl{font-size:13px;font-weight:600}
 .modal-scrim{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.5);display:flex;align-items:flex-start;justify-content:center;padding:72px 16px 16px}
 .log-scrim{align-items:center;padding:16px}
 .modal{width:100%;max-width:360px;background:var(--panel);border:1px solid var(--line2);border-radius:12px;padding:16px;box-shadow:0 20px 50px rgba(0,0,0,.5)}
@@ -222,6 +248,33 @@ body.authpage{padding:0;overflow-y:auto}
 .modal-input{height:40px;font-size:13px;margin-bottom:14px}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px}
 .modal-actions .btn{height:36px;padding:0 16px}
+/* Commit preview inside a dialog: bounded so five long subjects cannot push the Close button off. */
+.cpv{max-height:min(46vh,340px);overflow:auto;margin-bottom:12px}
+.cpv .empty{padding:10px 2px;color:var(--muted);font-size:13px}
+/* A commit row opens that commit as its own page, so it reads as tappable. */
+.cpv .crow.tap{cursor:pointer}
+.cpv .crow.tap:active{background:var(--panel2)}
+.cpv .cchev{flex:none;color:var(--faint);display:flex;align-items:center}
+/* IC_CHEV carries no intrinsic size, so it has to be given one or it collapses to nothing. */
+.cpv .cchev svg{width:12px;height:12px;display:block}
+/* Commit page: the two ways of reading a commit sit under its header. */
+.cmseg{align-self:flex-start;margin:0 0 10px}
+/* One expandable row per changed file. The patch is only rendered once its row is opened, so a
+   93-file commit costs a list rather than 93 diffs. */
+.cmfiles{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.cfile{border-top:1px solid var(--line)}
+.cfile:first-child{border-top:0}
+.cfile-hd{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer}
+.cfile-hd:active{background:var(--panel2)}
+.cfile-chev{flex:none;color:var(--faint);display:flex;align-items:center;transition:transform .12s ease}
+.cfile-chev svg{width:12px;height:12px;display:block}
+.cfile.open .cfile-chev{transform:rotate(90deg)}
+.cfile-hd .st{flex:none;width:14px;text-align:center;font-weight:700;font-size:12px;font-family:ui-monospace,monospace}
+.cfile-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
+.cfile-body{border-top:1px solid var(--line)}
+/* The patch sits inside a row, so it drops the outer card's border and rounding and caps its height
+   rather than pushing every row below it off the screen. */
+.cfile-diff{border:0;border-radius:0;max-height:min(60vh,520px)}
 .btn.dfill{background:var(--del);color:#fff;border:0;font-weight:700}
 .btn.dfill:active{filter:brightness(.92)}
 .btn.danger{color:var(--del);border-color:color-mix(in srgb, var(--del) 40%, var(--line))}
@@ -241,7 +294,10 @@ body.authpage{padding:0;overflow-y:auto}
 .dl.tap{cursor:pointer}
 .dl.tap:active{filter:brightness(1.25)}
 .dl .ln{display:inline-block;width:46px;text-align:right;padding-right:10px;color:var(--faint);-webkit-user-select:none;user-select:none}
-.dl .code{padding-right:12px}
+/* Diff text is selectable so a line can be long-pressed and copied. The gutter above deliberately
+   stays user-select:none, so dragging across several lines copies the code rather than the line
+   numbers interleaved through it. */
+.dl .code{padding-right:12px;-webkit-user-select:text;user-select:text}
 .dl.add{background:color-mix(in srgb, #3fb950 20%, transparent);color:#b7f0c2}
 .dl.del{background:color-mix(in srgb, #f85149 20%, transparent);color:#ffc4c4}
 .dl.hunk{background:var(--panel2);color:var(--accent)}
