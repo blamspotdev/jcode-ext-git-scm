@@ -1524,7 +1524,17 @@ function renderDiffInto(el: HTMLElement, text: string, path: string, openable = 
     const g = document.createElement('span'); g.className = 'ln'; g.textContent = gutter;
     const c = document.createElement('span'); c.className = 'code'; c.textContent = line || ' ';
     div.appendChild(g); div.appendChild(c);
-    if (openable && openLn > 0 && kind !== 'meta') { div.classList.add('tap'); div.title = 'Open at line ' + openLn; div.onclick = () => openFileAt(path, openLn); }
+    if (openable && openLn > 0 && kind !== 'meta') {
+      div.classList.add('tap');
+      div.title = 'Open at line ' + openLn;
+      // Now that diff text is selectable, releasing a selection drag on a row also fires a click.
+      // Opening the file mid-selection would throw the selection away, so a click that ends with
+      // text selected is treated as the selection it was.
+      div.onclick = () => {
+        if ((window.getSelection()?.toString() || '').length) return;
+        openFileAt(path, openLn);
+      };
+    }
     frag.appendChild(div);
   }
   el.appendChild(frag);

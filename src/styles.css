@@ -294,7 +294,10 @@ body.authpage{padding:0;overflow-y:auto}
 .dl.tap{cursor:pointer}
 .dl.tap:active{filter:brightness(1.25)}
 .dl .ln{display:inline-block;width:46px;text-align:right;padding-right:10px;color:var(--faint);-webkit-user-select:none;user-select:none}
-.dl .code{padding-right:12px}
+/* Diff text is selectable so a line can be long-pressed and copied. The gutter above deliberately
+   stays user-select:none, so dragging across several lines copies the code rather than the line
+   numbers interleaved through it. */
+.dl .code{padding-right:12px;-webkit-user-select:text;user-select:text}
 .dl.add{background:color-mix(in srgb, #3fb950 20%, transparent);color:#b7f0c2}
 .dl.del{background:color-mix(in srgb, #f85149 20%, transparent);color:#ffc4c4}
 .dl.hunk{background:var(--panel2);color:var(--accent)}
