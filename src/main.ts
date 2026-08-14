@@ -1565,12 +1565,11 @@ async function renderCommitPage() {
     '<div class="sub" id="cmSub">Loading…</div></div></div>' +
     '<div class="seg cmseg"><button id="cmPrev" class="on">vs previous commit</button>' +
     '<button id="cmCur">vs current</button></div>' +
-    '<div id="cmFiles" class="sfiles hide"></div>' +
-    '<div id="diffBody" class="diffwrap"><div class="dempty">Loading diff…</div></div>' +
+    '<div id="cmFiles" class="cmfiles"><div class="dempty">Loading…</div></div>' +
     '</div>';
-  const titleEl = $('cmTitle'), subEl = $('cmSub');
+  const titleEl = $('cmTitle'), subEl = $('cmSub'), listEl = $('cmFiles');
   titleEl.textContent = hash;
-  if (!repo) { $('diffBody').innerHTML = '<div class="dempty">This project isn’t a git repository.</div>'; return; }
+  if (!repo) { listEl.innerHTML = '<div class="dempty">This project isn’t a git repository.</div>'; return; }
 
   const meta = await rawGit(repo, "show -s --pretty=format:'%s%x1f%an%x1f%ar' " + sh(hash));
   if (meta.exitCode === 0) {
@@ -1585,20 +1584,63 @@ async function renderCommitPage() {
   async function show() {
     prevBtn.classList.toggle('on', mode === 'prev');
     curBtn.classList.toggle('on', mode === 'cur');
-    const diffEl = $('diffBody');
-    diffEl.innerHTML = '<div class="dempty">Loading diff…</div>';
+    listEl.innerHTML = '<div class="dempty">Loading…</div>';
     const names = mode === 'prev'
       ? await rawGit(repo!, 'show --name-status --pretty=format: ' + sh(hash), 60000)
       : await rawGit(repo!, 'diff --name-status ' + sh(hash) + '..HEAD', 60000);
-    const patch = mode === 'prev'
-      ? await rawGit(repo!, 'show --no-color --pretty=format: ' + sh(hash), 60000)
-      : await rawGit(repo!, 'diff --no-color ' + sh(hash) + '..HEAD', 60000);
-    const changed = out(names).split('\n').filter((l) => l.trim()).length;
+    if (names.exitCode !== 0) {
+      subEl.textContent = '';
+      listEl.innerHTML = '<div class="dempty">' + escapeHtml(out(names) || 'Could not read the commit.') + '</div>';
+      return;
+    }
+    const files: { status: string; path: string }[] = [];
+    for (const line of out(names).split('\n')) {
+      if (!line.trim()) continue;
+      const parts = line.split('\t');
+      const status = (parts[0] || '').trim();
+      // A rename reports "R100<TAB>old<TAB>new", so the path is the LAST field.
+      const path = (status[0] === 'R' || status[0] === 'C') ? parts[parts.length - 1] : parts[1];
+      if (path) files.push({ status: status[0] === '?' ? 'A' : status[0], path });
+    }
     subEl.textContent = (mode === 'prev' ? 'Changes in this commit' : 'Difference from the current branch') +
-      ' · ' + changed + (changed === 1 ? ' file' : ' files');
-    renderStashFiles($('cmFiles'), out(names), diffEl);
-    if (patch.exitCode !== 0) { diffEl.innerHTML = '<div class="dempty">' + escapeHtml(out(patch) || 'Could not read the diff.') + '</div>'; return; }
-    renderDiffInto(diffEl, out(patch), '', false);
+      ' · ' + files.length + (files.length === 1 ? ' file' : ' files');
+    if (!files.length) { listEl.innerHTML = '<div class="dempty">No file changes.</div>'; return; }
+
+    listEl.innerHTML = '';
+    files.forEach((f) => {
+      const row = document.createElement('div'); row.className = 'cfile';
+      const hd = document.createElement('div'); hd.className = 'cfile-hd';
+      const chev = document.createElement('span'); chev.className = 'cfile-chev'; chev.innerHTML = IC_CHEV;
+      const st = document.createElement('span'); st.className = 'st ' + f.status; st.textContent = f.status;
+      const nm = document.createElement('span'); nm.className = 'cfile-nm'; nm.textContent = f.path; nm.title = f.path;
+      hd.appendChild(chev); hd.appendChild(st); hd.appendChild(nm);
+      const bodyEl = document.createElement('div'); bodyEl.className = 'cfile-body hide';
+      row.appendChild(hd); row.appendChild(bodyEl);
+      // Each file's patch is fetched the first time that file is opened, not up front. The commit
+      // that scaffolded this repo touches 93 files; rendering every patch to read one of them is a
+      // second of work thrown away, and it buries the list the user came here to scan.
+      let loaded = false;
+      hd.onclick = async () => {
+        const opening = bodyEl.classList.contains('hide');
+        bodyEl.classList.toggle('hide', !opening);
+        row.classList.toggle('open', opening);
+        if (!opening || loaded) return;
+        loaded = true;
+        bodyEl.innerHTML = '<div class="dempty">Loading diff…</div>';
+        const patch = mode === 'prev'
+          ? await rawGit(repo!, 'show --no-color --pretty=format: ' + sh(hash) + ' -- ' + sh(f.path), 60000)
+          : await rawGit(repo!, 'diff --no-color ' + sh(hash) + '..HEAD -- ' + sh(f.path), 60000);
+        if (patch.exitCode !== 0) {
+          bodyEl.innerHTML = '<div class="dempty">' + escapeHtml(out(patch) || 'Could not read the diff.') + '</div>';
+          return;
+        }
+        const wrap = document.createElement('div'); wrap.className = 'diffwrap cfile-diff';
+        bodyEl.innerHTML = '';
+        bodyEl.appendChild(wrap);
+        renderDiffInto(wrap, out(patch), '', false);
+      };
+      listEl.appendChild(row);
+    });
   }
   prevBtn.onclick = () => { if (mode !== 'prev') { mode = 'prev'; void show(); } };
   curBtn.onclick = () => { if (mode !== 'cur') { mode = 'cur'; void show(); } };

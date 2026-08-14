@@ -259,6 +259,22 @@ body.authpage{padding:0;overflow-y:auto}
 .cpv .cchev svg{width:12px;height:12px;display:block}
 /* Commit page: the two ways of reading a commit sit under its header. */
 .cmseg{align-self:flex-start;margin:0 0 10px}
+/* One expandable row per changed file. The patch is only rendered once its row is opened, so a
+   93-file commit costs a list rather than 93 diffs. */
+.cmfiles{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.cfile{border-top:1px solid var(--line)}
+.cfile:first-child{border-top:0}
+.cfile-hd{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer}
+.cfile-hd:active{background:var(--panel2)}
+.cfile-chev{flex:none;color:var(--faint);display:flex;align-items:center;transition:transform .12s ease}
+.cfile-chev svg{width:12px;height:12px;display:block}
+.cfile.open .cfile-chev{transform:rotate(90deg)}
+.cfile-hd .st{flex:none;width:14px;text-align:center;font-weight:700;font-size:12px;font-family:ui-monospace,monospace}
+.cfile-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
+.cfile-body{border-top:1px solid var(--line)}
+/* The patch sits inside a row, so it drops the outer card's border and rounding and caps its height
+   rather than pushing every row below it off the screen. */
+.cfile-diff{border:0;border-radius:0;max-height:min(60vh,520px)}
 .btn.dfill{background:var(--del);color:#fff;border:0;font-weight:700}
 .btn.dfill:active{filter:brightness(.92)}
 .btn.danger{color:var(--del);border-color:color-mix(in srgb, var(--del) 40%, var(--line))}
