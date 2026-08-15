@@ -812,30 +812,63 @@ async function generateCommitMessage() {
     return;
   }
 
-  const instruction = (detail === 'detailed'
+  const shape = detail === 'detailed'
     ? 'Write a git commit message: a concise imperative subject line of about 50 characters, then a blank line, then a short body of bullet points saying what changed and why.'
-    : 'Write a single-line git commit message: one concise imperative subject of about 50 characters, no body.')
-    + ' Base it only on the diff piped to your stdin. Output ONLY the commit message text — no code fences, no quotes, no preamble.';
+    : 'Write a single-line git commit message: one concise imperative subject of about 50 characters, no body.';
+  const instruction = (withDiff: boolean) => shape + (withDiff
+    ? ' Your stdin holds the change totals, then the changed files with their line counts, then the diff. Long files are trimmed and both lists may be cut short, so describe the change as a whole rather than only what the visible hunks show.'
+    : ' Your stdin holds the change totals and the changed files with their line counts; the diff was too large to include, so infer the change from the totals, paths and line counts.')
+    + ' Output ONLY the commit message text — no code fences, no quotes, no preamble.';
 
   // Prefer the staged diff (what a commit would include); else all working-tree changes, with untracked
   // files added as /dev/null diffs so brand-new files are described by their content, not just their name.
-  const collect =
-    `S="$(${GITP} diff --cached)"; ` +
-    `if [ -n "$S" ]; then printf '%s\\n' "$S"; ` +
-    `else ${GITP} diff; ${GITP} ls-files --others --exclude-standard -z | ` +
-    `xargs -0 -r -I {} ${GITP} diff --no-index --no-color -- /dev/null {} 2>/dev/null; fi`;
+  //
+  // Every part of this payload is bounded because an agent CLI's own system prompt and tool definitions
+  // already claim most of its context window: an unbounded initial import (whole-repo diff, thousands of
+  // untracked paths) overflows the request before it is read. --shortstat leads so the true scale always
+  // survives whatever gets cut below it; the per-file diff cap keeps one generated file or lockfile from
+  // spending the whole body budget. The untracked pass is also capped by file count, not just by bytes:
+  // it forks a git per path, and under proot thousands of those cost minutes for hunks the cap discards.
+  const cap = "awk -v tot=96000 -v per=8000 '{if($0~/^diff --git /){fb=0;fs=0}n=length($0)+1;" +
+    'if(cut||tb+n>tot){cut=1}else if(fs||fb+n>per){if(!fs){print "@@ ... rest of this file omitted ...";fs=1}}' +
+    'else{print;fb+=n;tb+=n}}END{if(cut)print "... diff truncated — the totals above cover the full change ..."}' + "'";
+  const listCap = (what: string) =>
+    'awk -v w=' + sh(what) + " 'NR<=300{print}END{if(NR>300)printf \"... and %d more %s\\n\", NR-300, w}'";
+  const collect = (withDiff: boolean) =>
+    `if [ -n "$(${GITP}diff --cached --name-only)" ]; then ` +
+    `echo 'Staged for commit:'; ${GITP}diff --cached --shortstat; ` +
+    `${GITP}diff --cached --stat=240,240 | ${listCap('changed files')}; ` +
+    (withDiff ? `echo; echo 'Diff:'; ${GITP}diff --cached | ${cap}; ` : '') +
+    `else echo 'Working tree changes:'; ${GITP}diff --shortstat; ` +
+    `${GITP}diff --stat=240,240 | ${listCap('changed files')}; ` +
+    `${GITP}ls-files --others --exclude-standard | sed 's/^/ /;s/$/ | new file/' | ${listCap('new files')}; ` +
+    (withDiff
+      ? `echo; echo 'Diff:'; { ${GITP}diff; ${GITP}ls-files --others --exclude-standard -z | ` +
+        `head -z -n 200 | xargs -0 -r -I {} ${GITP}diff --no-index --no-color -- /dev/null {} 2>/dev/null; } | ${cap}; `
+      : '') +
+    `fi`;
 
   const modelArg = model ? ' --model ' + sh(model) : '';
-  const toolCmd = tool === 'custom' ? custom
-    : tool === 'opencode' ? 'opencode run' + modelArg + ' ' + sh(instruction)
-      : 'claude -p' + modelArg + ' ' + sh(instruction);
+  const toolCmd = (withDiff: boolean) => tool === 'custom' ? custom
+    : tool === 'opencode' ? 'opencode run' + modelArg + ' ' + sh(instruction(withDiff))
+      : 'claude -p' + modelArg + ' ' + sh(instruction(withDiff));
+  // Collect stderr is dropped, the tool's is not: git warnings (autocrlf, unreadable paths) would
+  // otherwise be concatenated onto the agent's stdout by out() and land in the commit box as text.
+  const attempt = (withDiff: boolean) =>
+    exec('{ ' + collect(withDiff) + ' ; } 2>/dev/null | ' + toolCmd(withDiff), { workdir: repo, timeoutMs: 180000 });
 
   const gen = $('genMsg');
   gen.classList.add('busy'); setBusy(true); logHide();
-  const r = await exec('{ ' + collect + ' ; } | ' + toolCmd, { workdir: repo, timeoutMs: 180000 });
+  let r = await attempt(true);
+  let raw = out(r);
+  // How much context the agent has left after its own preamble varies by tool, model and MCP setup,
+  // so even a capped diff can overflow. Drop to the file list alone rather than failing the button.
+  if ((r.exitCode !== 0 || !raw.trim()) && /too long|too large|context (window|length|limit)|exceeds?[^.]{0,24}tokens/i.test(raw)) {
+    r = await attempt(false);
+    raw = out(r);
+  }
   setBusy(false); gen.classList.remove('busy');
 
-  const raw = out(r);
   if (r.exitCode !== 0 || !raw.trim()) {
     logShow(raw || ('Could not run “' + tool + '”. Is it installed and signed in inside the runtime?'));
     return;
