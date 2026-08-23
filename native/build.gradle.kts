@@ -56,6 +56,11 @@ kotlin {
 dependencies {
     // JCode's, resolved from JCode at runtime. Versions must match what JCode ships.
     compileOnly(files("libs/jcode-ext-api-abi4.jar"))
+    // JCode's design system — the spacing scale, the compact buttons, the icon vocabulary and the
+    // semantic colours the Explorer badges use. compileOnly like Compose: these classes come from
+    // JCode at runtime, so the panel is drawn out of the same parts the rest of the IDE is, and a
+    // change to the app's density or palette moves this panel with it.
+    compileOnly(files("libs/jcode-design.jar"))
     compileOnly(platform("androidx.compose:compose-bom:2025.01.00"))
     compileOnly("androidx.compose.ui:ui")
     compileOnly("androidx.compose.foundation:foundation")
