@@ -20,6 +20,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -34,8 +36,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -263,16 +267,24 @@ private fun Merged(
 ) {
     val accent = JCodeTheme.semanticColors.success
     val horizontal = rememberScrollState()
+    // Rows, with the current conflict's run collapsed into one editable item. The item carries the
+    // line number its first line has, so the editor's gutter carries on counting the file rather
+    // than starting again at one.
     val items = remember(rows, state.current) {
-        val out = ArrayList<Pair<MergeRow?, Int>>()
+        val out = ArrayList<Triple<MergeRow?, Int, Int>>()
         var i = 0
+        var lastNumber = 0
         while (i < rows.size) {
             val row = rows[i]
             if (row.conflict >= 0 && row.conflict == state.current) {
-                out += null to row.conflict
-                while (i < rows.size && rows[i].conflict == row.conflict) i++
+                out += Triple(null, row.conflict, lastNumber + 1)
+                while (i < rows.size && rows[i].conflict == row.conflict) {
+                    if (rows[i].mergedNo > 0) lastNumber = rows[i].mergedNo
+                    i++
+                }
             } else {
-                out += row to -1
+                if (row.mergedNo > 0) lastNumber = row.mergedNo
+                out += Triple(row, -1, 0)
                 i++
             }
         }
@@ -282,9 +294,9 @@ private fun Merged(
         PaneTitle("Merged", accent, Modifier.fillMaxWidth())
         LazyColumn(state = list, modifier = Modifier.fillMaxSize()) {
             items(items.size) { i ->
-                val (row, conflict) = items[i]
+                val (row, conflict, firstLine) = items[i]
                 if (row == null) {
-                    InlineEditor(state, conflict)
+                    InlineEditor(state, conflict, firstLine)
                 } else {
                     Box(modifier = Modifier.fillMaxWidth().height(RowHeight)) {
                         LineCell(
@@ -306,24 +318,51 @@ private fun Merged(
     }
 }
 
-/** The conflict being worked on, as a field sitting where its lines would be. */
+/**
+ * The conflict being worked on, as an editing surface rather than a form field.
+ *
+ * A bordered, rounded input dropped into the middle of three code panes reads as a dialog that got
+ * loose. This is the pane: the same monospace, the same gutter width, its numbers carrying on from
+ * the lines above it, flush with the rows on either side. The gutter is one multi-line Text sharing
+ * the field's exact text style, which is what keeps the numbers on their lines as you type — two
+ * different styles would drift apart by a fraction of a line each row.
+ */
 @Composable
-private fun InlineEditor(state: MergeState, conflict: Int) {
-    Column(
+private fun InlineEditor(state: MergeState, conflict: Int, firstLine: Int) {
+    val colors = MaterialTheme.colorScheme
+    val value = state.resolutionOf(conflict)
+    val code = MaterialTheme.typography.bodySmall.copy(
+        fontFamily = FontFamily.Monospace,
+        color = colors.onSurface,
+    )
+    val count = if (value.isEmpty()) 1 else value.count { it == '\n' } + 1
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(JCodeTheme.semanticColors.warning.copy(alpha = 0.10f))
-            .padding(start = Space.sm, end = Space.sm, top = Space.xxs, bottom = Space.xs),
+            .background(JCodeTheme.semanticColors.warning.copy(alpha = 0.14f)),
     ) {
-        FieldLabel("Conflict ${conflict + 1} — editing")
-        CompactField(
-            value = state.resolutionOf(conflict),
+        Box(
+            modifier = Modifier
+                .width(BarWidth)
+                .fillMaxHeight()
+                .background(JCodeTheme.semanticColors.warning),
+        )
+        Text(
+            text = (0 until count).joinToString("\n") { (firstLine + it).toString() },
+            style = code.copy(color = colors.onSurfaceVariant.copy(alpha = 0.55f)),
+            textAlign = TextAlign.End,
+            modifier = Modifier.width(GutterWidth).padding(end = Space.xs),
+        )
+        BasicTextField(
+            value = value,
             onValueChange = { state.editCurrent(it) },
-            placeholder = "(empty — this conflict resolves to nothing)",
-            minLines = 1,
-            maxLines = 8,
-            literal = true,
-            monospace = true,
+            textStyle = code,
+            cursorBrush = SolidColor(colors.primary),
+            keyboardOptions = KeyboardOptions(
+                capitalization = KeyboardCapitalization.None,
+                autoCorrectEnabled = false,
+            ),
+            modifier = Modifier.weight(1f).padding(end = Space.sm),
         )
     }
 }
