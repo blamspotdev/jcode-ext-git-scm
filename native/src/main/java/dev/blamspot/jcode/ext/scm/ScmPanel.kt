@@ -230,17 +230,16 @@ private fun Toolbar(state: ScmState) {
             if (state.viewMode == ViewMode.Tree) ScmIcons.List else ScmIcons.Tree,
             if (state.viewMode == ViewMode.Tree) "Show as list" else "Show as tree",
         ) { state.toggleViewMode() }
-        // Fetch where the panel's reload used to be: with a repository open, bringing the remote's
-        // refs down is the thing you actually want from a button in that corner, and re-detecting
-        // the repository is a once-in-a-session act that can live in the menu.
+        // Fetch where the panel's reload used to be, and there is no reload beside it: fetching
+        // re-reads the working tree on its way back, so with a repository open the two buttons would
+        // have been one button and a slower version of itself.
         if (state.busy) BusySpinner() else HeaderIcon(ScmIcons.Fetch, "Fetch") { state.fetch() }
-        // Sign-in and the history page behind one button: a drawer this narrow cannot hold seven tap
+        // Sign-in and the history page behind one button: a drawer this narrow cannot hold six tap
         // targets in a row without the branch name losing to them.
         var overflow by remember { mutableStateOf(false) }
         Box {
             HeaderIcon(jcIcon(JCodeIcon.MoreVert), "More") { overflow = true }
             DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
-                MenuItem("Refresh", jcIcon(JCodeIcon.Refresh)) { overflow = false; state.boot() }
                 MenuItem("Branches & history…", ScmIcons.Branch) { overflow = false; state.openManage() }
                 MenuItem("GitHub sign-in…", ScmIcons.GitHub) { overflow = false; state.openGitHub() }
             }

@@ -335,9 +335,16 @@ internal class ScmState(
     fun pull() = mutate("pull --ff-only", timeoutMs = 180_000L) { r -> if (r.ok) log = r.output.trim().ifBlank { null } }
     fun push() = mutate("push", timeoutMs = 180_000L) { r -> if (r.ok) log = r.output.trim().ifBlank { null } }
 
-    /** Update the remote-tracking refs without touching the working tree — what ahead/behind reads. */
+    /**
+     * Update the remote-tracking refs without touching the working tree — what ahead/behind reads.
+     *
+     * Also the panel's refresh, which is why it takes the stashes with it. [mutate] re-reads the
+     * status on its way back, so between them this button leaves nothing on screen stale except
+     * which repositories exist, and that only changes when the workspace does.
+     */
     fun fetch() = mutate("fetch --all --prune", timeoutMs = 180_000L) { r ->
         if (r.ok) log = r.output.trim().ifBlank { null }
+        refreshStashes()
     }
 
     /**
