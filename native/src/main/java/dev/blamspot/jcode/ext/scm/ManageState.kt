@@ -207,6 +207,62 @@ internal class ManageState(
         ) { run("branch -D " + Git.quote(name), "Deleted $name") }
     }
 
+    /**
+     * Merge [name] into the branch that is checked out.
+     *
+     * Asked first, always. It rewrites the current branch, and on a touch device a menu tap is easy
+     * to make by accident. A merge that conflicts surfaces in the panel's "Merge Changes" like any
+     * other, so nothing here has to handle that case.
+     */
+    fun promptMerge(name: String) {
+        confirm = Confirm(
+            title = "Merge branch",
+            body = "Merge \"$name\" into $branch?",
+            action = "Merge",
+            destructive = false,
+        ) { run("merge " + Git.quote(name), "Merged $name into $branch", timeoutMs = 120_000L) }
+    }
+
+    /**
+     * Send a branch to its remote without checking it out.
+     *
+     * `push <remote> <name>` names both ends, so it does not depend on which branch happens to be
+     * current. A branch with no upstream gets one, because a push that leaves the branch still
+     * untracked would have to be repeated by hand next time.
+     */
+    fun push(b: LocalBranch) {
+        val remote = b.upstream.substringBefore('/', "").ifEmpty { "origin" }
+        val args = if (b.upstream.isEmpty()) {
+            "push -u " + Git.quote(remote) + " " + Git.quote(b.name)
+        } else {
+            "push " + Git.quote(remote) + " " + Git.quote(b.name)
+        }
+        run(args, "Pushed ${b.name}", timeoutMs = 180_000L)
+    }
+
+    /**
+     * Bring a branch up to date with what it tracks.
+     *
+     * The current branch takes a plain pull. Any other one is fast-forwarded straight from its
+     * upstream with `fetch <remote> <src>:<dst>`, which needs no working-tree switch and refuses
+     * rather than merging when it is not a fast-forward — which is the safe outcome for a branch
+     * you are not looking at. A branch with no upstream has nothing to pull from, so the menu does
+     * not offer this at all.
+     */
+    fun pull(b: LocalBranch) {
+        if (b.current) {
+            run("pull --ff-only", "Pulled ${b.name}", timeoutMs = 180_000L)
+            return
+        }
+        val remote = b.upstream.substringBefore('/', "").ifEmpty { return }
+        val source = b.upstream.substringAfter('/', "").ifEmpty { return }
+        run(
+            "fetch " + Git.quote(remote) + " " + Git.quote("$source:${b.name}"),
+            "Updated ${b.name}",
+            timeoutMs = 180_000L,
+        )
+    }
+
     /** The branch part of `origin/feature`, which is what you check out locally. */
     fun localNameOf(remoteBranch: String): String = remoteBranch.substringAfter('/', remoteBranch)
 }

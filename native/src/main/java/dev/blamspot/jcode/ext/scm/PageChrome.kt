@@ -283,3 +283,37 @@ internal fun ToggleChip(label: String, on: Boolean, onClick: () -> Unit) {
         }
     }
 }
+
+/**
+ * An icon on its own, as a button.
+ *
+ * A row of labelled buttons eats the width the row is actually about — a branch name and where it
+ * tracks — and every action added makes that worse. One glyph with a real touch target costs a
+ * fixed amount however many actions hide behind it.
+ */
+@Composable
+internal fun IconAction(
+    icon: ImageVector,
+    label: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(Radius.pill),
+        color = Color.Transparent,
+        modifier = modifier
+            .size(ControlSize.iconButton)
+            .then(if (enabled) Modifier.clickable(onClick = onClick).handCursor() else Modifier),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
+                modifier = Modifier.size(IconSize.md),
+            )
+        }
+    }
+}

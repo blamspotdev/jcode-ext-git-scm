@@ -3,6 +3,7 @@ package dev.blamspot.jcode.ext.scm
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,6 +16,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -23,10 +26,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.blamspot.jcode.design.CompactFilledButton
-import dev.blamspot.jcode.design.CompactOutlinedButton
+import dev.blamspot.jcode.design.JCodeIcon
 import dev.blamspot.jcode.design.JCodeTheme
 import dev.blamspot.jcode.design.Radius
 import dev.blamspot.jcode.design.Space
+import dev.blamspot.jcode.design.jcIcon
 
 /**
  * Branches and history, full width in the editor area.
@@ -50,11 +54,11 @@ internal fun ManagePage(state: ManageState, modifier: Modifier = Modifier) {
                     subtitle = "Manage branches and view history",
                 ) {
                     if (state.repo != null) {
-                        CompactOutlinedButton(
-                            text = "Fetch",
-                            onClick = { state.fetch() },
+                        IconAction(
+                            icon = ScmIcons.Fetch,
+                            label = "Fetch",
                             enabled = !state.busy,
-                        )
+                        ) { state.fetch() }
                     }
                 }
             }
@@ -143,31 +147,78 @@ private fun LocalBranchRow(state: ManageState, branch: LocalBranch) {
         current = branch.current,
         upstream = branch.upstream,
     ) {
-        if (!branch.current) {
-            CompactOutlinedButton(text = "Checkout", onClick = { state.checkout(branch.name) }, enabled = !state.busy)
-        }
-        CompactOutlinedButton(text = "Rename", onClick = { state.promptRename(branch.name) }, enabled = !state.busy)
-        if (!branch.current) {
-            dev.blamspot.jcode.design.CompactDestructiveButton(
-                text = "Delete",
-                onClick = { state.promptDelete(branch.name) },
-                enabled = !state.busy,
-            )
+        // Ordered by consequence: switching to it, then bringing it up to date, then sending it,
+        // then renaming, and deleting last where a mis-tap is least likely to land.
+        BranchMenu(state) { dismiss ->
+            if (!branch.current) {
+                PopoverItem("Checkout", ScmIcons.Branch, enabled = !state.busy) {
+                    dismiss(); state.checkout(branch.name)
+                }
+                PopoverItem("Merge to current branch", ScmIcons.Tree, enabled = !state.busy) {
+                    dismiss(); state.promptMerge(branch.name)
+                }
+            }
+            // Nothing to pull from without an upstream, so it is left out rather than offered and
+            // then failing. The current branch always has somewhere to pull from: its own tracking.
+            if (branch.current || branch.upstream.isNotEmpty()) {
+                PopoverItem("Pull", ScmIcons.Pull, enabled = !state.busy) {
+                    dismiss(); state.pull(branch)
+                }
+            }
+            PopoverItem("Push", ScmIcons.Push, enabled = !state.busy) {
+                dismiss(); state.push(branch)
+            }
+            PopoverDivider()
+            PopoverItem("Rename…", jcIcon(JCodeIcon.Rename), enabled = !state.busy) {
+                dismiss(); state.promptRename(branch.name)
+            }
+            if (!branch.current) {
+                PopoverItem("Delete…", jcIcon(JCodeIcon.Delete), enabled = !state.busy) {
+                    dismiss(); state.promptDelete(branch.name)
+                }
+            }
         }
     }
 }
 
 /**
- * A branch on the remote, offered for checkout only.
+ * A branch on the remote: check it out, or merge it in.
  *
- * Deleting a remote branch is destructive, easy to hit by accident on a touch screen, and not
- * undoable from here — so it is deliberately not on offer.
+ * Nothing else. Deleting a remote branch is destructive, easy to hit by accident on a touch screen,
+ * and not undoable from here; renaming and pushing belong to the local branch that tracks it.
  */
 @Composable
 private fun RemoteBranchRow(state: ManageState, name: String) {
     val short = state.localNameOf(name)
     BranchRow(name = name, current = short == state.branch, upstream = "") {
-        CompactOutlinedButton(text = "Checkout", onClick = { state.checkout(short) }, enabled = !state.busy)
+        BranchMenu(state) { dismiss ->
+            PopoverItem("Checkout", ScmIcons.Branch, enabled = !state.busy) {
+                dismiss(); state.checkout(short)
+            }
+            PopoverItem("Merge to current branch", ScmIcons.Tree, enabled = !state.busy) {
+                dismiss(); state.promptMerge(name)
+            }
+        }
+    }
+}
+
+/** The row's actions, behind one glyph. */
+@Composable
+private fun BranchMenu(state: ManageState, content: @Composable ColumnScope.(dismiss: () -> Unit) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    PopoverAnchor(
+        expanded = open,
+        onDismiss = { open = false },
+        alignEnd = true,
+        anchor = {
+            IconAction(
+                icon = jcIcon(JCodeIcon.MoreVert),
+                label = "Branch actions",
+                enabled = !state.busy,
+            ) { open = true }
+        },
+    ) {
+        content { open = false }
     }
 }
 

@@ -50,7 +50,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -61,10 +60,14 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import dev.blamspot.jcode.design.AlertDialog
 import dev.blamspot.jcode.design.CompactFilledButton
@@ -964,13 +967,11 @@ internal fun PopoverAnchor(
     anchor: @Composable () -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    var anchorHeight by remember { mutableStateOf(0) }
-    Box(modifier = modifier.onSizeChanged { anchorHeight = it.height }) {
+    Box(modifier = modifier) {
         anchor()
         if (!expanded) return@Box
         Popup(
-            alignment = if (alignEnd) Alignment.TopEnd else Alignment.TopStart,
-            offset = IntOffset(0, anchorHeight + PopoverGapPx),
+            popupPositionProvider = BelowAnchor(alignEnd),
             onDismissRequest = onDismiss,
             properties = PopupProperties(focusable = true),
         ) {
@@ -990,6 +991,36 @@ internal fun PopoverAnchor(
                 )
             }
         }
+    }
+}
+
+/**
+ * Under the thing that opened it, or over it when there is no room under.
+ *
+ * A fixed downward offset is fine until the anchor is near the bottom of the screen, and then the
+ * menu is drawn off the edge — which is exactly where a list's last row is. Flipping needs the
+ * popup's own measured size, and only a position provider is told that.
+ */
+private class BelowAnchor(private val alignEnd: Boolean) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val below = anchorBounds.bottom + PopoverGapPx
+        val above = anchorBounds.top - PopoverGapPx - popupContentSize.height
+        val y = when {
+            below + popupContentSize.height <= windowSize.height -> below
+            above >= 0 -> above
+            // Taller than the screen either way: pin it to the bottom rather than off the edge.
+            else -> (windowSize.height - popupContentSize.height).coerceAtLeast(0)
+        }
+        val x = if (alignEnd) anchorBounds.right - popupContentSize.width else anchorBounds.left
+        return IntOffset(
+            x.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0)),
+            y,
+        )
     }
 }
 
