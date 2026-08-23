@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -29,7 +30,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -42,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontFamily
@@ -324,14 +325,11 @@ private fun ColumnScope.BranchMenu(state: ScmState, onDismiss: () -> Unit) {
     var creating by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
     if (creating) {
-        OutlinedTextField(
+        CompactField(
             value = newName,
             onValueChange = { newName = it },
-            placeholder = { Text("New branch name", style = MaterialTheme.typography.bodySmall) },
-            textStyle = MaterialTheme.typography.bodySmall,
-            singleLine = true,
-            shape = RoundedCornerShape(Radius.md),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = Space.sm, vertical = Space.xxs),
+            placeholder = "New branch name",
+            modifier = Modifier.padding(horizontal = Space.sm, vertical = Space.xxs),
         )
         PopoverItem(
             label = "Create and switch",
@@ -410,13 +408,7 @@ private fun RepoBody(state: ScmState) {
                     if (state.staged.isNotEmpty()) BulkAction("Unstage all") { state.unstageAll() }
                 }
             }
-            if ("Staged" !in state.collapsedSections) {
-                if (state.staged.isEmpty()) {
-                    item { EmptyLine("No staged changes.") }
-                } else {
-                    section(state, state.staged, Section.Staged)
-                }
-            }
+            if ("Staged" !in state.collapsedSections) section(state, state.staged, Section.Staged)
 
             stickyHeader {
                 SectionHeader(state, "Changes", state.unstaged.size) {
@@ -427,12 +419,13 @@ private fun RepoBody(state: ScmState) {
                     }
                 }
             }
-            if ("Changes" !in state.collapsedSections) {
-                if (state.unstaged.isEmpty()) {
-                    item { EmptyLine("No changes.") }
-                } else {
-                    section(state, state.unstaged, Section.Unstaged)
-                }
+            if ("Changes" !in state.collapsedSections) section(state, state.unstaged, Section.Unstaged)
+
+            // One line for the whole clean tree rather than a sentence under each empty heading:
+            // "No staged changes." above "No changes." said the same thing twice and took two rows
+            // of a panel that has few to spare.
+            if (state.staged.isEmpty() && state.unstaged.isEmpty() && state.conflicts.isEmpty()) {
+                item { EmptyLine("Nothing to commit — the working tree is clean.") }
             }
 
             if (state.stashes.isNotEmpty()) {
@@ -549,25 +542,18 @@ private fun EmptyLine(text: String) {
 @Composable
 private fun CommitBox(state: ScmState) {
     Column(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = Space.xs, vertical = Space.sm),
-        verticalArrangement = Arrangement.spacedBy(Space.sm),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = Space.xs, vertical = Space.s),
+        verticalArrangement = Arrangement.spacedBy(Space.xs),
     ) {
-        Box {
-            OutlinedTextField(
-                value = state.commitMessage,
-                onValueChange = { state.commitMessage = it },
-                placeholder = {
-                    Text("Message", style = MaterialTheme.typography.bodySmall)
-                },
-                textStyle = MaterialTheme.typography.bodySmall,
-                shape = RoundedCornerShape(Radius.lg),
-                maxLines = 4,
-                modifier = Modifier.fillMaxWidth().heightIn(min = ControlSize.touchTarget),
-            )
-            // Inside the box's own corner rather than in the button row: drafting a message is
-            // something you do to the message, and the row below is what you do with it.
-            if (state.generateEnabled) {
-                Box(modifier = Modifier.align(Alignment.BottomEnd).padding(Space.xxs)) {
+        CompactField(
+            value = state.commitMessage,
+            onValueChange = { state.commitMessage = it },
+            placeholder = "Message",
+            maxLines = 4,
+            // Beside the message rather than floating in its corner: drafting one is something you
+            // do to the field, and an icon parked over the text was in the way of reading it.
+            trailing = if (!state.generateEnabled) null else {
+                {
                     if (state.generating) {
                         Box(
                             modifier = Modifier.size(ControlSize.iconButtonSm),
@@ -584,8 +570,8 @@ private fun CommitBox(state: ScmState) {
                         }
                     }
                 }
-            }
-        }
+            },
+        )
         // Commit takes the full width and its variants hide behind the caret: committing is what
         // this box is for, and the other three are the same act with a follow-on.
         var menu by remember { mutableStateOf(false) }
@@ -632,6 +618,57 @@ private fun CommitBox(state: ScmState) {
 }
 
 /**
+ * A text field the size of its text.
+ *
+ * Material's `OutlinedTextField` reserves fifty-six density-independent pixels before it holds
+ * anything, which is most of a phone-height drawer spent on three of them. This is a bordered
+ * surface around a `BasicTextField`, so an empty one is a line of text tall and grows only when the
+ * text does.
+ */
+@Composable
+private fun CompactField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+    maxLines: Int = 1,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        shape = RoundedCornerShape(Radius.md),
+        color = colors.surfaceVariant.copy(alpha = 0.3f),
+        border = BorderStroke(StrokeWidth.hairline, colors.outlineVariant),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(start = Space.sm, end = if (trailing == null) Space.sm else Space.xxs),
+        ) {
+            Box(modifier = Modifier.weight(1f).padding(vertical = Space.s)) {
+                if (value.isEmpty()) {
+                    Text(
+                        text = placeholder,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant,
+                    )
+                }
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(color = colors.onSurface),
+                    cursorBrush = SolidColor(colors.primary),
+                    maxLines = maxLines,
+                    singleLine = maxLines == 1,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            trailing?.invoke()
+        }
+    }
+}
+
+/**
  * The two fields git wants before it will attribute a commit.
  *
  * Shown where the commit was refused rather than sending the user to a settings page: the whole of
@@ -647,8 +684,8 @@ private fun IdentityForm(state: ScmState) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        IdentityField(name, "Your name") { name = it }
-        IdentityField(email, "you@example.com") { email = it }
+        CompactField(value = name, onValueChange = { name = it }, placeholder = "Your name")
+        CompactField(value = email, onValueChange = { email = it }, placeholder = "you@example.com")
         CompactFilledButton(
             text = "Save identity",
             onClick = { state.saveIdentity(name, email) },
@@ -656,19 +693,6 @@ private fun IdentityForm(state: ScmState) {
             busy = state.busy,
         )
     }
-}
-
-@Composable
-private fun IdentityField(value: String, placeholder: String, onValueChange: (String) -> Unit) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        placeholder = { Text(placeholder, style = MaterialTheme.typography.bodySmall) },
-        textStyle = MaterialTheme.typography.bodySmall,
-        shape = RoundedCornerShape(Radius.md),
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
-    )
 }
 
 /**
