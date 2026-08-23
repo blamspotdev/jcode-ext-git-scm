@@ -6,6 +6,8 @@ import androidx.compose.runtime.setValue
 import dev.blamspot.jcode.ext.api.NativeHost
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * GitHub credentials and the git identity, for the page that sets both.
@@ -79,22 +81,31 @@ internal class AuthState(
                     "Tools → Toolchains (git), then sign in."
                 return@launch
             }
+            authMessage = "Signing in…"
+            val identity = resolveIdentity(secret, who)
             val quotedUser = Git.quote(who)
-            val quotedEmail = Git.quote("$who@users.noreply.github.com")
             val command = buildString {
                 append("git config --global credential.helper store; ")
                 append("git config --global github.user $quotedUser; ")
                 append("if [ -z \"\$(git config --global --get user.name)\" ]; then ")
-                append("git config --global user.name $quotedUser; fi; ")
+                append("git config --global user.name \"\$GH_NAME\"; fi; ")
                 append("if [ -z \"\$(git config --global --get user.email)\" ]; then ")
-                append("git config --global user.email $quotedEmail; fi; ")
+                append("git config --global user.email \"\$GH_EMAIL\"; fi; ")
                 append("umask 077; touch ~/.git-credentials; ")
                 append("sed -i '/@github\\.com\$/d' ~/.git-credentials 2>/dev/null; ")
                 // Through the environment rather than the command line: a token in an argument is a
                 // token in `ps` output and in whatever logs the shell keeps.
                 append("printf 'https://%s:%s@github.com\\n' \"\$GH_USER\" \"\$GH_TOKEN\" >> ~/.git-credentials")
             }
-            val r = host.exec(command, env = mapOf("GH_USER" to who, "GH_TOKEN" to secret))
+            val r = host.exec(
+                command,
+                env = mapOf(
+                    "GH_USER" to who,
+                    "GH_TOKEN" to secret,
+                    "GH_NAME" to identity.name,
+                    "GH_EMAIL" to identity.email,
+                ),
+            )
             busy = false
             if (!r.ok) {
                 authFailed = true
@@ -113,6 +124,58 @@ internal class AuthState(
             authMessage = null
             load()
         }
+    }
+
+    /**
+     * Who GitHub says the token belongs to.
+     *
+     * Asked rather than assumed. This used to write the typed username into `user.name` and
+     * `<login>@users.noreply.github.com` into `user.email` — a guess at the first and wrong at the
+     * second: GitHub's noreply address has carried the account's numeric id since 2017, and a push
+     * from an account with "keep my email private" set is rejected without it.
+     *
+     * Everything here degrades rather than failing. With no curl, no network, or a token too narrow
+     * to read the address list, sign-in still completes on whatever could be resolved — the point of
+     * the button is to save credentials, and the identity is editable on this very page.
+     */
+    private suspend fun resolveIdentity(token: String, typedLogin: String): Identity {
+        val account = fetch("https://api.github.com/user", token)
+            ?.let { runCatching { JSONObject(it) }.getOrNull() }
+        val login = account?.text("login") ?: typedLogin
+        val id = account?.optLong("id", 0L) ?: 0L
+        val noreply = if (id > 0L) "$id+$login@users.noreply.github.com"
+        else "$login@users.noreply.github.com"
+        return Identity(
+            name = account?.text("name") ?: login,
+            // A verified primary address first, the profile's public one next, and GitHub's own
+            // stand-in last — a private account has no other address that will push.
+            email = primaryEmail(token) ?: account?.text("email") ?: noreply,
+        )
+    }
+
+    /** The address on the account, when the token is allowed to read the list at all. */
+    private suspend fun primaryEmail(token: String): String? {
+        val body = fetch("https://api.github.com/user/emails", token) ?: return null
+        val list = runCatching { JSONArray(body) }.getOrNull() ?: return null
+        var verified: String? = null
+        for (i in 0 until list.length()) {
+            val entry = list.optJSONObject(i) ?: continue
+            if (!entry.optBoolean("verified")) continue
+            val address = entry.text("email") ?: continue
+            if (entry.optBoolean("primary")) return address
+            if (verified == null) verified = address
+        }
+        return verified
+    }
+
+    private suspend fun fetch(url: String, token: String): String? {
+        val r = host.exec(
+            "curl -fsS -H \"Authorization: token \$GH_TOKEN\" -H \"User-Agent: JCode\" " +
+                "-H \"Accept: application/vnd.github+json\" " + Git.quote(url),
+            env = mapOf("GH_TOKEN" to token),
+            timeoutMs = 30_000L,
+        )
+        return r.stdout.takeIf { r.ok && it.isNotBlank() }
     }
 
     fun signOut() {
@@ -151,6 +214,26 @@ internal class AuthState(
         }
     }
 
+    /**
+     * A token pre-scoped for what this page does with it.
+     *
+     * `repo` to push and pull; `user:email` so the account's verified address can be read and put on
+     * your commits. Without the second one sign-in still works and falls back to GitHub's noreply
+     * address, which pushes — it is just not the address you would have chosen.
+     */
     fun openTokenPage() =
-        host.openUrl("https://github.com/settings/tokens/new?scopes=repo&description=JCode")
+        host.openUrl("https://github.com/settings/tokens/new?scopes=repo,user:email&description=JCode")
 }
+
+/** A git identity, as GitHub reports it. */
+private data class Identity(val name: String, val email: String)
+
+/**
+ * A field's text, or null.
+ *
+ * `optString` cannot express "absent": a JSON null comes back as the four characters "null", and
+ * GitHub returns null for a name or an email the account keeps private — which is exactly the case
+ * this has to tell apart.
+ */
+private fun JSONObject.text(key: String): String? =
+    if (isNull(key)) null else optString(key).trim().takeIf { it.isNotEmpty() }

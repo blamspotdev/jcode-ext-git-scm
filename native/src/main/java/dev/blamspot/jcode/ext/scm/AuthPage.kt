@@ -109,8 +109,9 @@ private fun Avatar(user: String) {
 private fun SignInCard(state: AuthState) {
     Card(title = "Sign in to GitHub") {
         Muted(
-            "Your username and a Personal Access Token with the repo scope. Stored via git's " +
-                "credential helper so push and pull just work.",
+            "Your username and a Personal Access Token — repo to push and pull, user:email to read " +
+                "the name and address for your commits. Stored via git's credential helper so push " +
+                "and pull just work.",
         )
         FieldLabel("Username")
         CompactField(
