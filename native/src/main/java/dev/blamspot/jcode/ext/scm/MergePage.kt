@@ -34,6 +34,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -95,6 +96,9 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
     var frameHeight by remember { mutableStateOf(0) }
     val caret = remember { Caret() }
     val page = rememberScrollState()
+    // One state across all three panes: a line running off the right of one has run off all of them.
+    val horizontal = rememberScrollState()
+    val merged = remember(rows, state.current) { mergedRows(rows, state.current) }
 
     BoxWithConstraints(
         modifier = modifier.fillMaxSize().onGloballyPositioned {
@@ -121,6 +125,46 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
         // and the page scrolls the difference. Keyed on the caret and on the frame's height — the
         // keyboard opening shrinks the latter, which is the moment the editor needs reaching. The
         // editor's own position is read, not keyed on, or every animated frame would restart this.
+        // The three panes are one view of one file, so they move as one. The two sides already
+        // share a list; the merged pane both follows it and leads it.
+        //
+        // Only the pane being driven pushes — [following] is what stops each answering the other's
+        // move with a move of its own — and the push is skipped when the other is already there,
+        // so an echo arriving a frame late dies rather than bouncing back.
+        var following by remember { mutableStateOf(false) }
+        LaunchedEffect(merged) {
+            snapshotFlow { top.firstVisibleItemIndex to top.firstVisibleItemScrollOffset }
+                .collect { (row, offset) ->
+                    if (following || row !in merged.itemOf.indices) return@collect
+                    val item = merged.itemOf[row]
+                    if (bottom.firstVisibleItemIndex == item &&
+                        bottom.firstVisibleItemScrollOffset == offset
+                    ) {
+                        return@collect
+                    }
+                    following = true
+                    try { bottom.scrollToItem(item, offset) } finally { following = false }
+                }
+        }
+        LaunchedEffect(merged) {
+            snapshotFlow { bottom.firstVisibleItemIndex to bottom.firstVisibleItemScrollOffset }
+                .collect { (item, offset) ->
+                    if (following || item !in merged.rowOf.indices) return@collect
+                    val row = merged.rowOf[item]
+                    // An item standing in for a whole conflict is taller than the rows it replaced,
+                    // so how far into it the pane has scrolled means nothing on the other side. The
+                    // row it begins at is as close as the two can be held together.
+                    val at = if (merged.items[item].first == null) 0 else offset
+                    if (top.firstVisibleItemIndex == row &&
+                        top.firstVisibleItemScrollOffset == at
+                    ) {
+                        return@collect
+                    }
+                    following = true
+                    try { top.scrollToItem(row, at) } finally { following = false }
+                }
+        }
+
         LaunchedEffect(caret.span, frameHeight, frameTop) {
             if (frameHeight <= 0) return@LaunchedEffect
             val margin = with(density) { CaretMargin.toPx() }
@@ -190,12 +234,12 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
                 )
 
                 else -> Column(modifier = Modifier.height(panes)) {
-                    Sides(state, rows, top, wide, modifier = Modifier.weight(SidesWeight))
+                    Sides(state, rows, top, wide, horizontal, modifier = Modifier.weight(SidesWeight))
                     HorizontalDivider(
                         thickness = StrokeWidth.thin,
                         color = MaterialTheme.colorScheme.outlineVariant,
                     )
-                    Merged(state, rows, bottom, caret, modifier = Modifier.weight(MergedWeight))
+                    Merged(state, merged, bottom, caret, horizontal, modifier = Modifier.weight(MergedWeight))
                 }
             }
         }
@@ -264,11 +308,11 @@ private fun Sides(
     rows: List<MergeRow>,
     list: LazyListState,
     wide: Boolean,
+    horizontal: ScrollState,
     modifier: Modifier = Modifier,
 ) {
     val theirs = JCodeTheme.semanticColors.warning
     val mine = MaterialTheme.colorScheme.primary
-    val horizontal = rememberScrollState()
     Column(modifier = modifier.fillMaxWidth()) {
         Row(modifier = Modifier.fillMaxWidth()) {
             PaneTitle("Theirs (incoming)", theirs, Modifier.weight(1f))
@@ -349,44 +393,21 @@ private fun SideCell(
 @Composable
 private fun Merged(
     state: MergeState,
-    rows: List<MergeRow>,
+    merged: MergedRows,
     list: LazyListState,
     caret: Caret,
+    horizontal: ScrollState,
     modifier: Modifier = Modifier,
 ) {
     val accent = JCodeTheme.semanticColors.success
-    val horizontal = rememberScrollState()
-    // Rows, with the current conflict's run collapsed into one editable item. The item carries the
-    // line number its first line has, so the editor's gutter carries on counting the file rather
-    // than starting again at one.
-    val items = remember(rows, state.current) {
-        val out = ArrayList<Triple<MergeRow?, Int, Int>>()
-        var i = 0
-        var lastNumber = 0
-        while (i < rows.size) {
-            val row = rows[i]
-            if (row.conflict >= 0 && row.conflict == state.current) {
-                out += Triple(null, row.conflict, lastNumber + 1)
-                while (i < rows.size && rows[i].conflict == row.conflict) {
-                    if (rows[i].mergedNo > 0) lastNumber = rows[i].mergedNo
-                    i++
-                }
-            } else {
-                if (row.mergedNo > 0) lastNumber = row.mergedNo
-                out += Triple(row, -1, 0)
-                i++
-            }
-        }
-        out
-    }
     Column(modifier = modifier.fillMaxWidth()) {
         PaneTitle("Merged", accent, Modifier.fillMaxWidth())
         LazyColumn(
             state = list,
             modifier = Modifier.fillMaxSize().onGloballyPositioned { caret.pane = it },
         ) {
-            items(items.size) { i ->
-                val (row, conflict, firstLine) = items[i]
+            items(merged.items.size) { i ->
+                val (row, conflict, firstLine) = merged.items[i]
                 if (row == null) {
                     InlineEditor(state, conflict, firstLine, caret)
                 } else {
@@ -569,6 +590,54 @@ private const val MergedWeight = 0.45f
 
 /** Below this the two sides become two columns of ellipsis, so only Theirs is shown. */
 private val MergeSplitMinWidth = 640.dp
+
+/**
+ * The merged pane's rows, and how they line up with the two panes above it.
+ *
+ * That pane collapses the conflict being edited into a single item, so from there on its indices
+ * stop matching the rows either side of it. These carry the correspondence back, which is what lets
+ * the three panes be scrolled as one.
+ */
+private class MergedRows(
+    /** Row, conflict being edited, and the line number its first line carries. */
+    val items: List<Triple<MergeRow?, Int, Int>>,
+    /** The row each item begins at. */
+    val rowOf: IntArray,
+    /** The item each row falls inside. */
+    val itemOf: IntArray,
+)
+
+/**
+ * Collapse the conflict being edited into one item, and record what became what.
+ *
+ * The item carries the line number its first line has, so the editor's gutter carries on counting
+ * the file rather than starting again at one.
+ */
+private fun mergedRows(rows: List<MergeRow>, current: Int): MergedRows {
+    val items = ArrayList<Triple<MergeRow?, Int, Int>>()
+    val rowOf = ArrayList<Int>()
+    val itemOf = IntArray(rows.size)
+    var i = 0
+    var lastNumber = 0
+    while (i < rows.size) {
+        val row = rows[i]
+        rowOf += i
+        if (row.conflict >= 0 && row.conflict == current) {
+            items += Triple(null, row.conflict, lastNumber + 1)
+            while (i < rows.size && rows[i].conflict == row.conflict) {
+                if (rows[i].mergedNo > 0) lastNumber = rows[i].mergedNo
+                itemOf[i] = items.size - 1
+                i++
+            }
+        } else {
+            if (row.mergedNo > 0) lastNumber = row.mergedNo
+            items += Triple(row, -1, 0)
+            itemOf[i] = items.size - 1
+            i++
+        }
+    }
+    return MergedRows(items, rowOf.toIntArray(), itemOf)
+}
 
 /** Room left around the caret when the page scrolls to it, so it never sits against an edge. */
 private val CaretMargin = 24.dp
