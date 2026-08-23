@@ -81,7 +81,7 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
     val bottom = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val rows = remember(state.revision, state.segments.size) { state.buildRows() }
-    val merged = remember(rows, state.current) { mergedRows(rows, state.current) }
+    val merged = remember(rows, state.editing) { mergedRows(rows, state.editing) }
     // Which pane the reader is moving; the others follow it, and it follows nobody. Without that a
     // follower answers with a move of its own, and since that answer lands a frame late it arrives
     // as a correction to a position the hand has already left — the pane being dragged is dragged
@@ -95,7 +95,9 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
             // Both are placed here, so neither should be chasing the other while it happens.
             driver = Driver.None
             scope.launch { top.animateScrollToItem(at) }
-            scope.launch { bottom.animateScrollToItem(merged.itemOf[at]) }
+            // goTo just opened a different block, which renumbers the merged pane's items — so the
+            // mapping is taken from where it now stands rather than from the one composed with.
+            scope.launch { bottom.animateScrollToItem(mergedRows(rows, state.editing).itemOf[at]) }
         }
     }
 
@@ -431,7 +433,15 @@ private fun Merged(
                             current = false,
                             horizontal = horizontal,
                             modifier = Modifier.fillMaxSize(),
-                            onClick = { if (row.conflict >= 0) state.goTo(row.conflict) },
+                            // Any line, not only a conflicted one: the merged pane is the
+                            // result, and the result is yours to write.
+                            onClick = {
+                                if (row.conflict >= 0) {
+                                    state.goTo(row.conflict)
+                                } else {
+                                    state.editSegment(row.segment)
+                                }
+                            },
                             actions = emptyList(),
                         )
                     }
@@ -448,32 +458,38 @@ private fun Merged(
  * loose. This is the pane: the same monospace at the same size, the same gutter width, its numbers
  * carrying on from the lines above it, flush with the rows on either side.
  *
- * The gutter and the canvas are pinned to one line height in sp rather than left to their own
- * metrics — a Compose Text and an Android EditText do not agree on leading, and a fraction of a line
- * per row is all it takes for the numbers to stop being beside their lines.
+ * The gutter and the canvas are pinned to one line height rather than left to their own metrics —
+ * a Compose Text and an Android EditText do not agree on leading, and a fraction of a line per row
+ * is all it takes for the numbers to stop being beside their lines.
+ *
+ * That height is a row's, not the text's own. The block occupies exactly the space of the rows it
+ * stands in for, so opening it for editing does not shove this pane out of step with the two above
+ * it — which is the whole point of showing three versions on one set of rows.
  */
 @Composable
-private fun InlineEditor(state: MergeState, conflict: Int, firstLine: Int, caret: Caret) {
+private fun InlineEditor(state: MergeState, segment: Int, firstLine: Int, caret: Caret) {
     val colors = MaterialTheme.colorScheme
-    val value = state.resolutionOf(conflict)
+    val value = state.textOf(segment)
     val count = if (value.isEmpty()) 1 else value.count { it == '\n' } + 1
+    val lineHeight = with(LocalDensity.current) { RowHeight.toSp() }
+    // Amber says conflicted, and most blocks are not — they are simply the one being written in.
+    val accent = if (state.segments.getOrNull(segment)?.conflict == true) {
+        JCodeTheme.semanticColors.warning
+    } else {
+        colors.primary
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(JCodeTheme.semanticColors.warning.copy(alpha = 0.14f)),
+            .background(accent.copy(alpha = 0.14f)),
     ) {
-        Box(
-            modifier = Modifier
-                .width(BarWidth)
-                .fillMaxHeight()
-                .background(JCodeTheme.semanticColors.warning),
-        )
+        Box(modifier = Modifier.width(BarWidth).fillMaxHeight().background(accent))
         Text(
             text = (0 until count).joinToString("\n") { (firstLine + it).toString() },
             style = TextStyle(
                 fontFamily = FontFamily.Monospace,
                 fontSize = CodeSize,
-                lineHeight = CodeLineHeight,
+                lineHeight = lineHeight,
                 color = colors.onSurfaceVariant.copy(alpha = 0.55f),
                 platformStyle = PlatformTextStyle(includeFontPadding = false),
                 lineHeightStyle = LineHeightStyle(
@@ -486,11 +502,11 @@ private fun InlineEditor(state: MergeState, conflict: Int, firstLine: Int, caret
         )
         CodeCanvas(
             value = value,
-            onValueChange = { state.editCurrent(it) },
+            onValueChange = { state.edit(segment, it) },
             textColor = colors.onSurface,
             cursorColor = colors.primary,
             fontSize = CodeSize,
-            lineHeight = CodeLineHeight,
+            lineHeight = lineHeight,
             modifier = Modifier
                 .weight(1f)
                 .padding(end = Space.sm)
@@ -618,12 +634,12 @@ private class MergedRows(
 )
 
 /**
- * Collapse the conflict being edited into one item, and record what became what.
+ * Collapse the block being edited into one item, and record what became what.
  *
  * The item carries the line number its first line has, so the editor's gutter carries on counting
  * the file rather than starting again at one.
  */
-private fun mergedRows(rows: List<MergeRow>, current: Int): MergedRows {
+private fun mergedRows(rows: List<MergeRow>, editing: Int): MergedRows {
     val items = ArrayList<Triple<MergeRow?, Int, Int>>()
     val rowOf = ArrayList<Int>()
     val itemOf = IntArray(rows.size)
@@ -632,9 +648,9 @@ private fun mergedRows(rows: List<MergeRow>, current: Int): MergedRows {
     while (i < rows.size) {
         val row = rows[i]
         rowOf += i
-        if (row.conflict >= 0 && row.conflict == current) {
-            items += Triple(null, row.conflict, lastNumber + 1)
-            while (i < rows.size && rows[i].conflict == row.conflict) {
+        if (row.segment == editing) {
+            items += Triple(null, row.segment, lastNumber + 1)
+            while (i < rows.size && rows[i].segment == row.segment) {
                 if (rows[i].mergedNo > 0) lastNumber = rows[i].mergedNo
                 itemOf[i] = items.size - 1
                 i++
@@ -724,4 +740,3 @@ private val MergeMinPaneArea = 200.dp
 
 /** The one type scale the three panes and the editor all use. */
 internal val CodeSize = 13.sp
-internal val CodeLineHeight = 18.sp

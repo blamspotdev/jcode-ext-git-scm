@@ -78,7 +78,10 @@ internal fun CodeCanvas(
             // The pane's rows are laid out at a fixed height; matching it here is what keeps the
             // gutter's numbers beside the lines they belong to.
             val target = lineHeight.value * view.resources.displayMetrics.scaledDensity
-            val natural = view.paint.fontMetrics.let { it.bottom - it.top }
+            // ascent..descent, not top..bottom: the layout lays lines out on the former, and the
+            // latter is the font's furthest reach. Measuring the wrong one leaves every line short
+            // of the height asked for, by a constant that the gutter beside it does not share.
+            val natural = view.paint.fontMetrics.let { it.descent - it.ascent }
             view.setLineSpacing((target - natural).coerceAtLeast(0f), 1f)
             view.setTextColor(textColor.toArgb())
             view.tintCursor(cursorColor)

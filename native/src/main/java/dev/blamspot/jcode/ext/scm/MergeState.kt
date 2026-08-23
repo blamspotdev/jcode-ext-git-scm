@@ -91,6 +91,8 @@ internal data class MergeRow(
     val mineNo: Int,
     val mergedNo: Int,
     val conflict: Int,
+    /** The segment this row came from, which is the unit the merged pane edits. */
+    val segment: Int,
 )
 
 /**
@@ -158,6 +160,7 @@ internal class MergeState(
 
     fun goTo(n: Int) {
         current = n.coerceIn(0, (conflictCount - 1).coerceAtLeast(0))
+        editing = segmentOf(current)
     }
 
     fun boot() {
@@ -178,8 +181,13 @@ internal class MergeState(
             val r = host.exec("cat " + Git.quote(path), workdir = root)
             val parsed = parseConflicts(r.stdout)
             segments.replaceWith(parsed)
-            resolutions.replaceWith(parsed.map { if (it.conflict) it.ours.joinToString("\n") else "" })
+            // Every segment, not only the conflicts: the merged pane is the result, and the
+            // result is editable throughout. A conflict starts on our side, the rest as they are.
+            resolutions.replaceWith(
+                parsed.map { (if (it.conflict) it.ours else it.text).joinToString("\n") },
+            )
             conflicted = parsed.any { it.conflict }
+            editing = parsed.indexOfFirst { it.conflict }
             loading = false
         }
     }
@@ -195,6 +203,20 @@ internal class MergeState(
     /** Bumped on every edit, so the three panes are rebuilt only when the result actually changed. */
     var revision by mutableStateOf(0)
         private set
+
+    /** The segment open for editing in the merged pane; -1 while none is. */
+    var editing by mutableStateOf(-1)
+        private set
+
+    /** Open a block for editing, which is what tapping a line in the merged pane does. */
+    fun editSegment(index: Int) {
+        if (index in segments.indices) editing = index
+    }
+
+    /** The merged text of a segment, and the way to change it. */
+    fun textOf(segment: Int): String = resolutions.getOrElse(segment) { "" }
+
+    fun edit(segment: Int, text: String) = choose(segment, text)
 
     fun choose(index: Int, text: String) {
         if (index !in resolutions.indices) return
@@ -252,15 +274,11 @@ internal class MergeState(
         var g = 0
         var conflictIndex = -1
         segments.forEachIndexed { i, segment ->
-            if (!segment.conflict) {
-                segment.text.forEach { line ->
-                    out += MergeRow(line, line, line, ++t, ++m, ++g, -1)
-                }
-                return@forEachIndexed
-            }
-            conflictIndex++
-            val theirs = segment.theirs
-            val mine = segment.ours
+            if (segment.conflict) conflictIndex++
+            // The sides are what the file had; the merged column is what it is being made into,
+            // which is the edited text whether or not this block was ever in conflict.
+            val theirs = if (segment.conflict) segment.theirs else segment.text
+            val mine = if (segment.conflict) segment.ours else segment.text
             val merged = resolutions.getOrElse(i) { "" }
                 .let { if (it.isEmpty()) emptyList() else it.split('\n') }
             val height = maxOf(theirs.size, mine.size, merged.size)
@@ -275,7 +293,8 @@ internal class MergeState(
                     theirsNo = if (a != null) ++t else 0,
                     mineNo = if (b != null) ++m else 0,
                     mergedNo = if (c != null) ++g else 0,
-                    conflict = conflictIndex,
+                    conflict = if (segment.conflict) conflictIndex else -1,
+                    segment = i,
                 )
             }
         }
@@ -348,7 +367,7 @@ internal class MergeState(
             message = "Saving…"
             failed = false
             val merged = segments.mapIndexed { i, segment ->
-                if (segment.conflict) resolutions.getOrElse(i) { "" } else segment.text.joinToString("\n")
+                resolutions.getOrElse(i) { segment.text.joinToString("\n") }
             }.joinToString("\n")
             val encoded = java.util.Base64.getEncoder().encodeToString(merged.toByteArray(Charsets.UTF_8))
             val write = host.exec(
