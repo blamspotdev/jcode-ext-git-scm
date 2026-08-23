@@ -261,7 +261,7 @@ internal class ScmState(
 
     suspend fun refreshStashes() {
         val active = repo ?: return
-        val r = git.run(active.root, "stash list --format=%gd:%gs", timeoutMs = 20_000L)
+        val r = git.run(active.root, "stash list --format=" + Git.quote("%gd:%gs"), timeoutMs = 20_000L)
         val parsed = if (!r.ok) emptyList() else r.stdout.lines()
             .filter { it.isNotBlank() }
             .map { line ->
@@ -387,10 +387,12 @@ internal class ScmState(
         if (n.isEmpty() || e.isEmpty() || busy) return
         scope.launch {
             busy = true
+            // No repository: an identity is global, and asking git to enter one first is a
+            // reason for this to fail that has nothing to do with what it is setting.
             val r = git.run(
-                repo?.root,
+                null,
                 "config --global user.name " + Git.quote(n) +
-                    " && git config --global user.email " + Git.quote(e),
+                    " && " + Git.prefixFor(null) + "config --global user.email " + Git.quote(e),
             )
             busy = false
             if (r.ok) {
@@ -416,7 +418,7 @@ internal class ScmState(
                 " in the working tree, including untracked files? This cannot be undone.",
             action = "Discard all",
         ) {
-            mutate("restore -- . 2>/dev/null; git clean -fdq")
+            mutate("restore -- . 2>/dev/null; " + Git.prefixFor(repo?.root) + "clean -fdq")
         }
     }
 
@@ -560,11 +562,17 @@ internal class ScmState(
 
     // --- branches ------------------------------------------------------------------------------
 
-    /** Read the local branches, for the branch menu. */
+    /**
+     * Read the local branches, for the branch menu.
+     *
+     * The format string is quoted because it goes through a shell, and `%(refname:short)` unquoted
+     * opens a subshell at the first bracket — the command dies of a syntax error and the menu shows
+     * no branches at all, which looks exactly like a repository that has none.
+     */
     fun loadBranches() {
         val active = repo ?: return
         scope.launch {
-            val r = git.run(active.root, "branch --format=%(refname:short)", timeoutMs = 20_000L)
+            val r = git.run(active.root, "branch --format=" + Git.quote("%(refname:short)"), timeoutMs = 20_000L)
             branches.replaceWith(
                 if (!r.ok) emptyList()
                 else r.stdout.lines().map { it.trim() }.filter { it.isNotEmpty() },
