@@ -7,11 +7,14 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -27,6 +30,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.blamspot.jcode.design.AlertDialog
+import dev.blamspot.jcode.design.CompactFilledButton
 import dev.blamspot.jcode.design.IconSize
 import dev.blamspot.jcode.design.JCodeIcon
 import dev.blamspot.jcode.design.JCodeTheme
@@ -76,6 +81,7 @@ internal fun ManagePage(state: ManageState, modifier: Modifier = Modifier) {
         }
     }
     state.confirm?.let { c -> ConfirmDialog(c) { state.confirm = null } }
+    state.preview?.let { p -> CommitsDialog(p) { state.preview = null } }
 }
 
 @Composable
@@ -143,6 +149,10 @@ private fun LocalBranchRow(state: ManageState, branch: LocalBranch) {
         // Ordered by consequence: switching to it, then bringing it up to date, then sending it,
         // then renaming, and deleting last where a mis-tap is least likely to land.
         BranchMenu(state) { dismiss ->
+            PopoverItem("Show $RECENT_COMMITS recent commits", ScmIcons.List, enabled = !state.busy) {
+                dismiss(); state.showRecent(branch.name)
+            }
+            PopoverDivider()
             if (!branch.current) {
                 PopoverItem("Checkout", ScmIcons.Branch, enabled = !state.busy) {
                     dismiss(); state.checkout(branch.name)
@@ -192,6 +202,10 @@ private fun RemoteBranchRow(state: ManageState, branch: RemoteBranch) {
         outgoing = branch.outgoing,
     ) {
         BranchMenu(state) { dismiss ->
+            PopoverItem("Show $RECENT_COMMITS recent commits", ScmIcons.List, enabled = !state.busy) {
+                dismiss(); state.showRecent(name)
+            }
+            PopoverDivider()
             PopoverItem("Checkout", ScmIcons.Branch, enabled = !state.busy) {
                 dismiss(); state.checkout(short)
             }
@@ -356,3 +370,38 @@ private fun Drift(icon: androidx.compose.ui.graphics.vector.ImageVector, count: 
         )
     }
 }
+
+/**
+ * A branch's recent commits, to read rather than to act on.
+ *
+ * Same row shape as the history below the branch list, so the two read alike — it is the same kind
+ * of thing, asked of a different branch. Scrolls rather than growing, because a dialog that runs off
+ * the screen has no way back.
+ */
+@Composable
+private fun CommitsDialog(preview: CommitPreview, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(preview.branch) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = PreviewMaxHeight)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                when {
+                    preview.error != null -> Muted(preview.error)
+                    preview.commits.isEmpty() -> Muted("No commits on this branch.")
+                    else -> preview.commits.forEachIndexed { i, c ->
+                        if (i > 0) RowDivider()
+                        CommitRow(c)
+                    }
+                }
+            }
+        },
+        confirmButton = { CompactFilledButton(text = "Close", onClick = onDismiss) },
+    )
+}
+
+/** Tall enough for the ten it promises, short enough to stay a dialog. */
+private val PreviewMaxHeight = 360.dp

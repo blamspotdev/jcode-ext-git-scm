@@ -28,6 +28,9 @@ internal data class LocalBranch(
 /** A branch on a remote, measured against the branch that is checked out. */
 internal data class RemoteBranch(val name: String, val incoming: Int = 0, val outgoing: Int = 0)
 
+/** A branch's recent commits, or why they could not be read. */
+internal data class CommitPreview(val branch: String, val commits: List<Commit>, val error: String?)
+
 /** One line of history. */
 internal data class Commit(val hash: String, val author: String, val relative: String, val subject: String)
 
@@ -61,6 +64,9 @@ internal class ManageState(
 
     var tab by mutableStateOf(BranchTab.Local)
     var confirm by mutableStateOf<Confirm?>(null)
+
+    /** A branch's recent history, while the dialog showing it is open. */
+    var preview by mutableStateOf<CommitPreview?>(null)
 
     val local = mutableStateListOf<LocalBranch>()
     val remote = mutableStateListOf<RemoteBranch>()
@@ -133,21 +139,44 @@ internal class ManageState(
 
     private suspend fun loadCommits() {
         val root = repo ?: return
-        val r = git.run(root, "log -n 100 --pretty=format:" + Git.quote("%h%x1f%an%x1f%ar%x1f%s"))
-        commits.replaceWith(
-            if (!r.ok) emptyList() else r.stdout.lines()
-                .filter { it.isNotBlank() }
-                .map { line ->
-                    val p = line.split(UNIT_SEPARATOR)
-                    Commit(
-                        hash = p.getOrElse(0) { "" },
-                        author = p.getOrElse(1) { "" },
-                        relative = p.getOrElse(2) { "" },
-                        subject = p.getOrElse(3) { "" },
-                    )
-                },
-        )
+        val r = git.run(root, "log -n 100 --pretty=format:" + Git.quote(LOG_FORMAT))
+        commits.replaceWith(if (r.ok) parseCommits(r.stdout) else emptyList())
     }
+
+    /**
+     * A branch's last few commits, read only.
+     *
+     * Deciding whether to check a branch out or merge it means knowing what it carries, and the
+     * history below the list only ever shows the current branch. One constant drives both this
+     * and the label that opens it, so the menu cannot promise a number the log does not return.
+     * A branch with fewer commits simply shows fewer; a read that fails shows git's own words
+     * rather than an empty box.
+     */
+    fun showRecent(name: String) {
+        val root = repo ?: return
+        scope.launch {
+            val r = git.run(
+                root,
+                "log -n " + RECENT_COMMITS + " --pretty=format:" + Git.quote(LOG_FORMAT) +
+                    " " + Git.quote(name),
+                timeoutMs = 30_000L,
+            )
+            preview = if (r.ok) CommitPreview(name, parseCommits(r.stdout), null)
+            else CommitPreview(name, emptyList(), r.failure)
+        }
+    }
+
+    private fun parseCommits(text: String): List<Commit> = text.lines()
+        .filter { it.isNotBlank() }
+        .map { line ->
+            val p = line.split(UNIT_SEPARATOR)
+            Commit(
+                hash = p.getOrElse(0) { "" },
+                author = p.getOrElse(1) { "" },
+                relative = p.getOrElse(2) { "" },
+                subject = p.getOrElse(3) { "" },
+            )
+        }
 
     /**
      * How far each remote branch is from the one checked out.
@@ -336,3 +365,9 @@ private fun count(track: String, word: String): Int =
 
 /** Enough rows that a normal repository is fully measured, few enough that a huge one is not slow. */
 private const val REMOTE_MEASURE_LIMIT = 40
+
+/** What a history line is made of, shared by the page's list and a branch's preview. */
+private const val LOG_FORMAT = "%h%x1f%an%x1f%ar%x1f%s"
+
+/** How many commits the branch preview shows — and says it will show. */
+internal const val RECENT_COMMITS = 10
