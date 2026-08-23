@@ -1,6 +1,5 @@
 package dev.blamspot.jcode.ext.scm
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,7 +18,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -29,7 +27,6 @@ import dev.blamspot.jcode.design.CompactOutlinedButton
 import dev.blamspot.jcode.design.JCodeTheme
 import dev.blamspot.jcode.design.Radius
 import dev.blamspot.jcode.design.Space
-import dev.blamspot.jcode.design.handCursor
 
 /**
  * Branches and history, full width in the editor area.
@@ -79,7 +76,14 @@ internal fun ManagePage(state: ManageState, modifier: Modifier = Modifier) {
 private fun BranchesCard(state: ManageState) {
     Card(
         title = "Branches",
-        trailing = { TabToggle(state) },
+        trailing = {
+            SegmentedToggle(
+                options = BranchTab.entries.toList(),
+                selected = state.tab,
+                label = { it.name },
+                onSelect = { state.tab = it },
+            )
+        },
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -127,38 +131,6 @@ private fun BranchesCard(state: ManageState) {
             else -> state.remote.forEachIndexed { i, name ->
                 if (i > 0) RowDivider()
                 RemoteBranchRow(state, name)
-            }
-        }
-    }
-}
-
-/** Local / Remote, as a two-segment switch rather than two buttons that both look pressable. */
-@Composable
-private fun TabToggle(state: ManageState) {
-    Surface(
-        shape = RoundedCornerShape(Radius.pill),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-    ) {
-        Row {
-            BranchTab.entries.forEach { tab ->
-                val selected = state.tab == tab
-                Surface(
-                    shape = RoundedCornerShape(Radius.pill),
-                    color = if (selected) MaterialTheme.colorScheme.primary else androidx.compose.ui.graphics.Color.Transparent,
-                    contentColor = if (selected) MaterialTheme.colorScheme.onPrimary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(Radius.pill))
-                        .clickable { state.tab = tab }
-                        .handCursor(),
-                ) {
-                    Text(
-                        text = tab.name,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.padding(horizontal = Space.md, vertical = Space.s),
-                    )
-                }
             }
         }
     }

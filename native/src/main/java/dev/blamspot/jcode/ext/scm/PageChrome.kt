@@ -1,11 +1,14 @@
 package dev.blamspot.jcode.ext.scm
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -20,14 +23,18 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import dev.blamspot.jcode.design.ControlSize
 import dev.blamspot.jcode.design.IconSize
 import dev.blamspot.jcode.design.JCodeTheme
 import dev.blamspot.jcode.design.Radius
 import dev.blamspot.jcode.design.Space
 import dev.blamspot.jcode.design.StrokeWidth
+import dev.blamspot.jcode.design.handCursor
 
 /**
  * The parts every page of this extension is built from.
@@ -192,5 +199,87 @@ internal fun Note(text: String, spinner: Boolean = false) {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/**
+ * A two-or-more-way switch where exactly one option is on.
+ *
+ * A filled segment inside a track reads as "this one is selected"; two independent filled pills
+ * side by side read as two things shouting to be pressed. That difference is the whole reason this
+ * is one control rather than a row of toggles.
+ */
+@Composable
+internal fun <T> SegmentedToggle(
+    options: List<T>,
+    selected: T,
+    label: (T) -> String,
+    onSelect: (T) -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(Radius.pill),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Row {
+            options.forEach { option ->
+                val on = option == selected
+                Surface(
+                    shape = RoundedCornerShape(Radius.pill),
+                    color = if (on) MaterialTheme.colorScheme.primary else Color.Transparent,
+                    contentColor = if (on) MaterialTheme.colorScheme.onPrimary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(Radius.pill))
+                        .clickable { onSelect(option) }
+                        .handCursor(),
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = ControlSize.compactHeight)
+                            .padding(ControlSize.compactPadding),
+                    ) {
+                        Text(
+                            text = label(option),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A setting that is simply on or off.
+ *
+ * Tinted rather than filled when on: it is a preference about how the page is drawn, not an action,
+ * and it should not compete with the content it is a preference about.
+ */
+@Composable
+internal fun ToggleChip(label: String, on: Boolean, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        shape = RoundedCornerShape(Radius.pill),
+        color = if (on) colors.secondaryContainer else Color.Transparent,
+        contentColor = if (on) colors.onSecondaryContainer else colors.onSurfaceVariant,
+        border = if (on) null else BorderStroke(StrokeWidth.hairline, colors.outlineVariant),
+        modifier = Modifier.clip(RoundedCornerShape(Radius.pill)).clickable(onClick = onClick).handCursor(),
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .defaultMinSize(minHeight = ControlSize.compactHeight)
+                .padding(ControlSize.compactPadding),
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+            )
+        }
     }
 }

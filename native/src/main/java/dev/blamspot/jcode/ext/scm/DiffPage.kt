@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,7 +24,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -47,14 +47,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.blamspot.jcode.design.CompactOutlinedButton
+import dev.blamspot.jcode.design.ControlSize
 import dev.blamspot.jcode.design.IconSize
-import dev.blamspot.jcode.design.JCodeIcon
 import dev.blamspot.jcode.design.JCodeTheme
 import dev.blamspot.jcode.design.Radius
 import dev.blamspot.jcode.design.Space
 import dev.blamspot.jcode.design.StrokeWidth
 import dev.blamspot.jcode.design.handCursor
-import dev.blamspot.jcode.design.jcIcon
 import kotlinx.coroutines.launch
 
 /**
@@ -98,17 +97,19 @@ internal fun DiffPage(state: DiffState, modifier: Modifier = Modifier) {
 
 @Composable
 private fun DiffHeader(state: DiffState, wide: Boolean) {
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = Space.lg, vertical = Space.md)) {
+    // One row, not two. The file is the subject and sits left; everything else is chrome and packs
+    // to the right. Split across two rows the same controls put one lonely chip at the far left and
+    // two at the far right with a chasm between, and spent twice the height saying it.
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = Space.lg, vertical = Space.sm),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Space.sm),
+    ) {
         Row(
+            modifier = Modifier.weight(1f),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Space.sm),
+            horizontalArrangement = Arrangement.spacedBy(Space.md),
         ) {
-            Icon(
-                imageVector = jcIcon(JCodeIcon.Files),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(IconSize.lg),
-            )
             Text(
                 text = state.title,
                 style = MaterialTheme.typography.titleMedium,
@@ -116,55 +117,57 @@ private fun DiffHeader(state: DiffState, wide: Boolean) {
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                // fill = false so the counts stay beside the name rather than being pushed to the
+                // far side of the row by a path with room to spare.
                 modifier = Modifier.weight(1f, fill = false),
             )
-            if (state.added > 0) {
-                Text(
-                    text = "+${state.added}",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontFamily = FontFamily.Monospace,
-                    color = JCodeTheme.semanticColors.success,
-                )
-            }
-            if (state.removed > 0) {
-                Text(
-                    text = "−${state.removed}",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-            Box(modifier = Modifier.weight(1f))
-            if (state.openable) {
-                CompactOutlinedButton(
-                    text = "Open file",
-                    onClick = { state.openAt(state.firstChangedLine) },
-                )
-            }
+            Counts(state)
         }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = Space.sm),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Space.sm),
-        ) {
-            // A file git has never seen has nothing to compare against: every other option
-            // resolves to an empty diff, so the picker would offer only dead ends.
-            if (state.openable && state.compare != Compare.Untracked) ComparePicker(state)
-            else Muted(state.subtitle)
-            Box(modifier = Modifier.weight(1f))
-            if (wide) {
-                Chip(
-                    label = if (state.layout == DiffLayout.Split) "Split" else "Inline",
-                    selected = state.layout == DiffLayout.Split,
-                ) {
-                    state.layout =
-                        if (state.layout == DiffLayout.Split) DiffLayout.Inline else DiffLayout.Split
-                }
-            }
-            Chip(label = "Wrap", selected = state.wrap) { state.wrap = !state.wrap }
+        // A file git has never seen has nothing to compare against: every other option resolves to
+        // an empty diff, so the picker would offer only dead ends.
+        if (state.openable && state.compare != Compare.Untracked) ComparePicker(state)
+        else Muted(state.subtitle)
+        if (wide) {
+            SegmentedToggle(
+                options = DiffLayout.entries.toList(),
+                selected = state.layout,
+                label = { it.name },
+                onSelect = { state.layout = it },
+            )
+        }
+        ToggleChip(label = "Wrap", on = state.wrap) { state.wrap = !state.wrap }
+        if (state.openable) {
+            CompactOutlinedButton(
+                text = "Open file",
+                onClick = { state.openAt(state.firstChangedLine) },
+            )
         }
     }
 }
+
+/** How much changed, in the two colours the rows themselves use. */
+@Composable
+private fun Counts(state: DiffState) {
+    Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
+        if (state.added > 0) {
+            Text(
+                text = "+${state.added}",
+                style = MaterialTheme.typography.labelMedium,
+                fontFamily = FontFamily.Monospace,
+                color = JCodeTheme.semanticColors.success,
+            )
+        }
+        if (state.removed > 0) {
+            Text(
+                text = "-${state.removed}",
+                style = MaterialTheme.typography.labelMedium,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
 
 /**
  * What the file is being compared against.
@@ -178,7 +181,7 @@ private fun ComparePicker(state: DiffState) {
         expanded = state.showPicker,
         onDismiss = { state.showPicker = false },
         anchor = {
-            Chip(label = state.compare.label, selected = false, trailingCaret = true) {
+            ActionChip(label = state.compare.label, caret = true) {
                 state.showPicker = !state.showPicker
             }
         },
@@ -280,8 +283,8 @@ private fun HunkBar(index: Int, total: Int, onJump: (Int) -> Unit) {
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Chip(label = "Previous", selected = false, enabled = index > 0) { onJump(index - 1) }
-        Chip(label = "Next", selected = false, enabled = index < total - 1) { onJump(index + 1) }
+        ActionChip(label = "Previous", enabled = index > 0) { onJump(index - 1) }
+        ActionChip(label = "Next", enabled = index < total - 1) { onJump(index + 1) }
     }
 }
 
@@ -331,8 +334,8 @@ private fun HunkHeaderRow(state: DiffState, item: DiffItem.HunkStart) {
             modifier = Modifier.weight(1f),
         )
         if (state.canAct) {
-            Chip(label = "Stage", selected = false) { state.stage(item.hunk) }
-            Chip(label = "Revert", selected = false, danger = true) { state.promptRevert(item.hunk) }
+            ActionChip(label = "Stage") { state.stage(item.hunk) }
+            ActionChip(label = "Revert", danger = true) { state.promptRevert(item.hunk) }
         }
     }
 }
@@ -507,35 +510,31 @@ private fun StatusLetter(code: String) {
     }
 }
 
-/** A small toggle or action, sized for a header rather than for a form. */
+/** A small action, sized for a toolbar rather than for a form. */
 @Composable
-private fun Chip(
+private fun ActionChip(
     label: String,
-    selected: Boolean,
     enabled: Boolean = true,
     danger: Boolean = false,
-    trailingCaret: Boolean = false,
+    caret: Boolean = false,
     onClick: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
-    val content = when {
-        !enabled -> colors.onSurfaceVariant.copy(alpha = 0.4f)
-        selected -> colors.onPrimary
-        danger -> colors.error
-        else -> colors.onSurfaceVariant
-    }
     Surface(
         shape = RoundedCornerShape(Radius.pill),
-        color = if (selected) colors.primary else Color.Transparent,
-        contentColor = content,
-        border = BorderStroke(
-            StrokeWidth.hairline,
-            if (selected) Color.Transparent else colors.outlineVariant,
-        ),
+        color = Color.Transparent,
+        contentColor = when {
+            !enabled -> colors.onSurfaceVariant.copy(alpha = 0.4f)
+            danger -> colors.error
+            else -> colors.onSurfaceVariant
+        },
+        border = BorderStroke(StrokeWidth.hairline, colors.outlineVariant),
         modifier = if (enabled) Modifier.clickable(onClick = onClick).handCursor() else Modifier,
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = Space.sm, vertical = Space.xxs),
+            modifier = Modifier
+                .defaultMinSize(minHeight = ControlSize.compactHeight)
+                .padding(ControlSize.compactPadding),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Space.xxs),
         ) {
@@ -545,7 +544,7 @@ private fun Chip(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (trailingCaret) Text(text = "⌄", style = MaterialTheme.typography.labelMedium)
+            if (caret) Text(text = "⌄", style = MaterialTheme.typography.labelMedium)
         }
     }
 }
