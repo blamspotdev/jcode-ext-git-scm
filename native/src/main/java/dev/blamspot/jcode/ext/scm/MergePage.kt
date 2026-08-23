@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -80,13 +81,21 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
     val bottom = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val rows = remember(state.revision, state.segments.size) { state.buildRows() }
+    val merged = remember(rows, state.current) { mergedRows(rows, state.current) }
+    // Which pane the reader is moving; the others follow it, and it follows nobody. Without that a
+    // follower answers with a move of its own, and since that answer lands a frame late it arrives
+    // as a correction to a position the hand has already left — the pane being dragged is dragged
+    // back to where it was, and the leftover falls through to the page.
+    var driver by remember { mutableStateOf(Driver.None) }
 
     fun jump(n: Int) {
         state.goTo(n)
         val at = rows.indexOfFirst { it.conflict == state.current }
         if (at >= 0) {
+            // Both are placed here, so neither should be chasing the other while it happens.
+            driver = Driver.None
             scope.launch { top.animateScrollToItem(at) }
-            scope.launch { bottom.animateScrollToItem(at) }
+            scope.launch { bottom.animateScrollToItem(merged.itemOf[at]) }
         }
     }
 
@@ -98,7 +107,6 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
     val page = rememberScrollState()
     // One state across all three panes: a line running off the right of one has run off all of them.
     val horizontal = rememberScrollState()
-    val merged = remember(rows, state.current) { mergedRows(rows, state.current) }
 
     BoxWithConstraints(
         modifier = modifier.fillMaxSize().onGloballyPositioned {
@@ -127,41 +135,42 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
         // editor's own position is read, not keyed on, or every animated frame would restart this.
         // The three panes are one view of one file, so they move as one. The two sides already
         // share a list; the merged pane both follows it and leads it.
-        //
-        // Only the pane being driven pushes — [following] is what stops each answering the other's
-        // move with a move of its own — and the push is skipped when the other is already there,
-        // so an echo arriving a frame late dies rather than bouncing back.
-        var following by remember { mutableStateOf(false) }
+        val sidesDragged by top.interactionSource.collectIsDraggedAsState()
+        val mergedDragged by bottom.interactionSource.collectIsDraggedAsState()
+        LaunchedEffect(sidesDragged, mergedDragged) {
+            // Latched rather than read live, so the fling a gesture leaves behind keeps carrying the
+            // other panes after the finger is gone.
+            when {
+                sidesDragged -> driver = Driver.Sides
+                mergedDragged -> driver = Driver.Merged
+            }
+        }
+        val rowHeight = with(density) { RowHeight.toPx() }
         LaunchedEffect(merged) {
             snapshotFlow { top.firstVisibleItemIndex to top.firstVisibleItemScrollOffset }
                 .collect { (row, offset) ->
-                    if (following || row !in merged.itemOf.indices) return@collect
+                    if (driver != Driver.Sides || row !in merged.itemOf.indices) return@collect
                     val item = merged.itemOf[row]
-                    if (bottom.firstVisibleItemIndex == item &&
-                        bottom.firstVisibleItemScrollOffset == offset
+                    val into = (row - merged.rowOf[item]) * rowHeight + offset
+                    val at = merged.intoItem(item, into, rowHeight, bottom).toInt()
+                    if (bottom.firstVisibleItemIndex != item ||
+                        bottom.firstVisibleItemScrollOffset != at
                     ) {
-                        return@collect
+                        bottom.scrollToItem(item, at)
                     }
-                    following = true
-                    try { bottom.scrollToItem(item, offset) } finally { following = false }
                 }
         }
         LaunchedEffect(merged) {
             snapshotFlow { bottom.firstVisibleItemIndex to bottom.firstVisibleItemScrollOffset }
                 .collect { (item, offset) ->
-                    if (following || item !in merged.rowOf.indices) return@collect
-                    val row = merged.rowOf[item]
-                    // An item standing in for a whole conflict is taller than the rows it replaced,
-                    // so how far into it the pane has scrolled means nothing on the other side. The
-                    // row it begins at is as close as the two can be held together.
-                    val at = if (merged.items[item].first == null) 0 else offset
-                    if (top.firstVisibleItemIndex == row &&
-                        top.firstVisibleItemScrollOffset == at
-                    ) {
-                        return@collect
+                    if (driver != Driver.Merged || item !in merged.rowOf.indices) return@collect
+                    val into = merged.intoRows(item, offset.toFloat(), rowHeight, bottom)
+                    val row = (merged.rowOf[item] + (into / rowHeight).toInt())
+                        .coerceAtMost(merged.itemOf.lastIndex)
+                    val at = (into % rowHeight).toInt()
+                    if (top.firstVisibleItemIndex != row || top.firstVisibleItemScrollOffset != at) {
+                        top.scrollToItem(row, at)
                     }
-                    following = true
-                    try { top.scrollToItem(row, at) } finally { following = false }
                 }
         }
 
@@ -193,6 +202,7 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
                     margin = margin,
                 )
                 if (paneShift != 0f) {
+                    driver = Driver.Merged
                     bottom.scrollBy(paneShift)
                     withFrameNanos { }
                     return@repeat
@@ -637,6 +647,40 @@ private fun mergedRows(rows: List<MergeRow>, current: Int): MergedRows {
         }
     }
     return MergedRows(items, rowOf.toIntArray(), itemOf)
+}
+
+/** Which pane the reader is moving. The others follow it, and it follows nobody. */
+private enum class Driver { None, Sides, Merged }
+
+/** The rows an item stands for — one, except the conflict being edited. */
+private fun MergedRows.rowsAt(item: Int): Int =
+    (if (item + 1 < rowOf.size) rowOf[item + 1] else itemOf.size) - rowOf[item]
+
+/** That item's height on screen, or 0 when it is not currently laid out. */
+private fun heightOf(item: Int, list: LazyListState): Int =
+    list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == item }?.size ?: 0
+
+/**
+ * How far into an item a distance measured in rows falls, and back again.
+ *
+ * The item standing in for the conflict is one item where the sides have many rows, and it is as
+ * tall as its text rather than as tall as the rows it replaced. Held at its first row instead, the
+ * sides would sit still through the whole of it — and then answer the merged pane with that same
+ * first row, which is what dragged the pane back to the top of the conflict every time it moved.
+ * Scaling between the two keeps them moving together across it.
+ */
+private fun MergedRows.intoItem(item: Int, into: Float, rowHeight: Float, list: LazyListState): Float {
+    val rows = rowsAt(item)
+    val height = heightOf(item, list)
+    if (rows <= 1 || height <= 0) return into
+    return into / (rows * rowHeight) * height
+}
+
+private fun MergedRows.intoRows(item: Int, into: Float, rowHeight: Float, list: LazyListState): Float {
+    val rows = rowsAt(item)
+    val height = heightOf(item, list)
+    if (rows <= 1 || height <= 0) return into
+    return into / height * (rows * rowHeight)
 }
 
 /** Room left around the caret when the page scrolls to it, so it never sits against an edge. */
