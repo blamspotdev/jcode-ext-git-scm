@@ -4,6 +4,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,6 +29,7 @@ import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -35,6 +37,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.PlatformTextStyle
@@ -84,7 +89,19 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
         }
     }
 
-    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+    // Where the page's own frame sits, to put the caret's position in the same terms. It does not
+    // move with the page's scroll, which is what makes it the thing to measure against.
+    var frameTop by remember { mutableStateOf(0f) }
+    var frameHeight by remember { mutableStateOf(0) }
+    val caret = remember { Caret() }
+    val page = rememberScrollState()
+
+    BoxWithConstraints(
+        modifier = modifier.fillMaxSize().onGloballyPositioned {
+            frameTop = it.positionInRoot().y
+            frameHeight = it.size.height
+        },
+    ) {
         val wide = maxWidth >= MergeSplitMinWidth
         LaunchedEffect(wide) { state.split = wide }
         // The panes keep the most room they have ever been given here. When the keyboard takes half
@@ -100,7 +117,60 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
         if (chrome > 0.dp && free > roomiest) roomiest = free
         val panes = roomiest.coerceAtLeast(MergeMinPaneArea)
 
-        Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+        // Keep the caret in sight without the window sliding: the editor says where its caret is,
+        // and the page scrolls the difference. Keyed on the caret and on the frame's height — the
+        // keyboard opening shrinks the latter, which is the moment the editor needs reaching. The
+        // editor's own position is read, not keyed on, or every animated frame would restart this.
+        LaunchedEffect(caret.span, frameHeight, frameTop) {
+            if (frameHeight <= 0) return@LaunchedEffect
+            val margin = with(density) { CaretMargin.toPx() }
+            // Two things can be hiding the caret and they are fixed in order. Inside the pane, the
+            // editor may have grown past what the pane shows, and only the pane's own list reaches
+            // that. Outside it, the pane may be under the keyboard, and only the page reaches that.
+            //
+            // The pane is moved by what it takes to see the caret *within the pane* — never by the
+            // page's shortfall. Handing it that instead scrolls the editor clean out of the pane,
+            // at which point the list drops it and there is nothing left to measure against.
+            //
+            // Measure, correct, measure again: a correction moves the editor, and where it lands is
+            // not known until the frame after. Reading a position once and trusting it is what
+            // sends a caret walking up the file chasing a stale number to the top of the page.
+            repeat(MaxRevealPasses) {
+                val span = caret.span ?: return@LaunchedEffect
+                val editor = caret.editor?.takeIf { it.isAttached } ?: return@LaunchedEffect
+                val editorTop = editor.positionInRoot().y
+                val pane = caret.pane?.takeIf { it.isAttached }
+
+                val inPane = pane?.let { editorTop - it.positionInRoot().y }
+                val paneShift = if (inPane == null) 0f else shift(
+                    top = inPane + span.first,
+                    bottom = inPane + span.last,
+                    height = pane.size.height.toFloat(),
+                    margin = margin,
+                )
+                if (paneShift != 0f) {
+                    bottom.scrollBy(paneShift)
+                    withFrameNanos { }
+                    return@repeat
+                }
+
+                val inFrame = editorTop - frameTop
+                // Snapped, not animated: a caret is followed, not travelled to, and an animation
+                // half-finished when the next keystroke lands leaves the page between two places.
+                val pageShift = shift(
+                    top = inFrame + span.first,
+                    bottom = inFrame + span.last,
+                    height = frameHeight.toFloat(),
+                    margin = margin,
+                )
+                // In sight, which is where every pass but the first ends up.
+                if (pageShift == 0f) return@LaunchedEffect
+                page.scrollBy(pageShift)
+                withFrameNanos { }
+            }
+        }
+
+        Column(modifier = Modifier.fillMaxWidth().verticalScroll(page)) {
             Column(modifier = Modifier.onSizeChanged { chrome = with(density) { it.height.toDp() } }) {
                 MergeHeader(state, ::jump)
                 HorizontalDivider(thickness = StrokeWidth.hairline, color = MaterialTheme.colorScheme.outlineVariant)
@@ -125,7 +195,7 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
                         thickness = StrokeWidth.thin,
                         color = MaterialTheme.colorScheme.outlineVariant,
                     )
-                    Merged(state, rows, bottom, modifier = Modifier.weight(MergedWeight))
+                    Merged(state, rows, bottom, caret, modifier = Modifier.weight(MergedWeight))
                 }
             }
         }
@@ -281,6 +351,7 @@ private fun Merged(
     state: MergeState,
     rows: List<MergeRow>,
     list: LazyListState,
+    caret: Caret,
     modifier: Modifier = Modifier,
 ) {
     val accent = JCodeTheme.semanticColors.success
@@ -310,11 +381,14 @@ private fun Merged(
     }
     Column(modifier = modifier.fillMaxWidth()) {
         PaneTitle("Merged", accent, Modifier.fillMaxWidth())
-        LazyColumn(state = list, modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = list,
+            modifier = Modifier.fillMaxSize().onGloballyPositioned { caret.pane = it },
+        ) {
             items(items.size) { i ->
                 val (row, conflict, firstLine) = items[i]
                 if (row == null) {
-                    InlineEditor(state, conflict, firstLine)
+                    InlineEditor(state, conflict, firstLine, caret)
                 } else {
                     Box(modifier = Modifier.fillMaxWidth().height(RowHeight)) {
                         LineCell(
@@ -348,7 +422,7 @@ private fun Merged(
  * per row is all it takes for the numbers to stop being beside their lines.
  */
 @Composable
-private fun InlineEditor(state: MergeState, conflict: Int, firstLine: Int) {
+private fun InlineEditor(state: MergeState, conflict: Int, firstLine: Int, caret: Caret) {
     val colors = MaterialTheme.colorScheme
     val value = state.resolutionOf(conflict)
     val count = if (value.isEmpty()) 1 else value.count { it == '\n' } + 1
@@ -386,7 +460,11 @@ private fun InlineEditor(state: MergeState, conflict: Int, firstLine: Int) {
             cursorColor = colors.primary,
             fontSize = CodeSize,
             lineHeight = CodeLineHeight,
-            modifier = Modifier.weight(1f).padding(end = Space.sm),
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = Space.sm)
+                .onGloballyPositioned { caret.editor = it },
+            onCaret = { caret.span = it },
         )
     }
 }
@@ -491,6 +569,42 @@ private const val MergedWeight = 0.45f
 
 /** Below this the two sides become two columns of ellipsis, so only Theirs is shown. */
 private val MergeSplitMinWidth = 640.dp
+
+/** Room left around the caret when the page scrolls to it, so it never sits against an edge. */
+private val CaretMargin = 24.dp
+
+/** How many times a reveal re-measures before giving up; two settles it, the rest is headroom. */
+private const val MaxRevealPasses = 4
+
+/** How far a viewport of [height] must move for [top]..[bottom] to sit inside it, clear of [margin]. */
+private fun shift(top: Float, bottom: Float, height: Float, margin: Float): Float = when {
+    top < margin -> top - margin
+    bottom > height - margin -> bottom - (height - margin)
+    else -> 0f
+}
+
+/**
+ * Where the caret is, told in two halves.
+ *
+ * The editor knows the caret's offset in its own pixels and nothing about the page; the page knows
+ * where the editor sits and nothing about its text. Neither has to learn the other's business.
+ */
+private class Caret {
+    /**
+     * The editing surface itself, not a reading of where it was.
+     *
+     * Every scroll moves it, and a recorded position is a frame behind — which is enough for a
+     * caret walking up the file to be measured against where the editor used to be, and for the
+     * page to keep scrolling the same way until it runs out.
+     */
+    var editor by mutableStateOf<LayoutCoordinates?>(null)
+
+    /** The pane the editor sits in, whose own scrolling is the only thing that reaches inside it. */
+    var pane by mutableStateOf<LayoutCoordinates?>(null)
+
+    /** Top and bottom of the caret's line within that surface, or null when it is not being edited. */
+    var span by mutableStateOf<IntRange?>(null)
+}
 
 /** A floor for the pane area, for a window too short to have established one of its own. */
 private val MergeMinPaneArea = 200.dp

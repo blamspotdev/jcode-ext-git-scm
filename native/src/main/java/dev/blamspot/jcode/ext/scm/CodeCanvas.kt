@@ -43,6 +43,7 @@ internal fun CodeCanvas(
     fontSize: TextUnit,
     lineHeight: TextUnit,
     modifier: Modifier = Modifier,
+    onCaret: (IntRange?) -> Unit = {},
 ) {
     AndroidView(
         modifier = modifier,
@@ -72,6 +73,7 @@ internal fun CodeCanvas(
             }
         },
         update = { view ->
+            view.onCaret = onCaret
             view.setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSize.value)
             // The pane's rows are laid out at a fixed height; matching it here is what keeps the
             // gutter's numbers beside the lines they belong to.
@@ -102,10 +104,37 @@ internal fun CodeCanvas(
 private class CodeEditText(context: Context) : EditText(context) {
     var settingFromState = false
 
-    // Moving the cursor makes a TextView ask every parent to scroll it into view. Here that walks
-    // all the way out and takes the page with it, so the two versions being merged leave the screen
-    // at the moment they are most needed. The panes keep the position they were put in.
+    /** Told where the caret is, in this view's own pixels, whenever it moves. */
+    var onCaret: ((IntRange?) -> Unit)? = null
+
+    // Moving the caret makes a TextView ask every parent to scroll it into view, and that request
+    // walks all the way out to the window — which slides the whole app up, taking the two versions
+    // being merged off screen at the moment they are most needed. The page answers it instead,
+    // from [onCaret], so only the page moves.
     override fun requestRectangleOnScreen(rectangle: Rect, immediate: Boolean): Boolean = false
+
+    override fun onSelectionChanged(selStart: Int, selEnd: Int) {
+        super.onSelectionChanged(selStart, selEnd)
+        reportCaret()
+    }
+
+    override fun onFocusChanged(focused: Boolean, direction: Int, previous: Rect?) {
+        super.onFocusChanged(focused, direction, previous)
+        if (focused) reportCaret() else onCaret?.invoke(null)
+    }
+
+    // A selection can change before there is a layout to locate it in — on the way back from a
+    // rotation, or as the field is first filled — so the caret is reported again once there is one.
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        if (hasFocus()) reportCaret()
+    }
+
+    private fun reportCaret() {
+        val at = layout ?: return
+        val line = at.getLineForOffset(selectionStart.coerceIn(0, text?.length ?: 0))
+        onCaret?.invoke(at.getLineTop(line)..at.getLineBottom(line))
+    }
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
         val connection = super.onCreateInputConnection(outAttrs)
