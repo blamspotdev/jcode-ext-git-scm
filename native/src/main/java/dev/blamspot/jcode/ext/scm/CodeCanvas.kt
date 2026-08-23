@@ -44,6 +44,8 @@ internal fun CodeCanvas(
     lineHeight: TextUnit,
     modifier: Modifier = Modifier,
     onCaret: (IntRange?) -> Unit = {},
+    placeholder: String = "",
+    placeholderColor: Color = textColor,
 ) {
     AndroidView(
         modifier = modifier,
@@ -74,6 +76,9 @@ internal fun CodeCanvas(
         },
         update = { view ->
             view.onCaret = onCaret
+            // A hint, not content: it stands in for what is not there and is never saved.
+            view.hint = placeholder
+            view.setHintTextColor(placeholderColor.toArgb())
             view.setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSize.value)
             // The pane's rows are laid out at a fixed height; matching it here is what keeps the
             // gutter's numbers beside the lines they belong to.
