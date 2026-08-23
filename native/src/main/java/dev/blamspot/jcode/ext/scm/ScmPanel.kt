@@ -934,7 +934,7 @@ private fun BulkAction(label: String, onClick: () -> Unit) {
  * the top of it.
  */
 @Composable
-private fun PopoverAnchor(
+internal fun PopoverAnchor(
     expanded: Boolean,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
@@ -981,7 +981,7 @@ private val PopoverMaxHeight = 320.dp
 
 /** One line of a pop-over. [selected] is for the entry you are already on. */
 @Composable
-private fun PopoverItem(
+internal fun PopoverItem(
     label: String,
     icon: ImageVector? = null,
     selected: Boolean = false,
@@ -1027,7 +1027,7 @@ private fun PopoverItem(
 
 /** A heading inside a pop-over — the same quiet label the sections use. */
 @Composable
-private fun PopoverLabel(text: String) {
+internal fun PopoverLabel(text: String) {
     Text(
         text = text.uppercase(),
         style = MaterialTheme.typography.labelSmall,
@@ -1039,7 +1039,7 @@ private fun PopoverLabel(text: String) {
 }
 
 @Composable
-private fun PopoverDivider() {
+internal fun PopoverDivider() {
     HorizontalDivider(
         thickness = StrokeWidth.hairline,
         color = MaterialTheme.colorScheme.outlineVariant,
