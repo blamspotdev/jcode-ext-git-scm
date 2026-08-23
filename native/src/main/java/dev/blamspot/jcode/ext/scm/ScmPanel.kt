@@ -1,11 +1,14 @@
 package dev.blamspot.jcode.ext.scm
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,8 +24,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -30,7 +31,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,10 +41,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import dev.blamspot.jcode.design.AlertDialog
 import dev.blamspot.jcode.design.CompactDestructiveButton
 import dev.blamspot.jcode.design.CompactFilledButton
@@ -53,7 +58,6 @@ import dev.blamspot.jcode.design.ControlSize
 import dev.blamspot.jcode.design.IconSize
 import dev.blamspot.jcode.design.JCodeIcon
 import dev.blamspot.jcode.design.JCodeTheme
-import dev.blamspot.jcode.design.ManagerGroupHeader
 import dev.blamspot.jcode.design.Radius
 import dev.blamspot.jcode.design.Space
 import dev.blamspot.jcode.design.StrokeWidth
@@ -184,37 +188,42 @@ private fun Toolbar(state: ScmState) {
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Box {
-            Surface(
-                shape = RoundedCornerShape(Radius.lg),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier
-                    .clip(RoundedCornerShape(Radius.lg))
-                    .clickable { branchMenu = true; state.loadBranches() }
-                    .handCursor(),
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Space.xs),
-                    modifier = Modifier.padding(horizontal = Space.sm, vertical = Space.xs),
+        PopoverAnchor(
+            expanded = branchMenu,
+            onDismiss = { branchMenu = false },
+            anchor = {
+                Surface(
+                    shape = RoundedCornerShape(Radius.lg),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(Radius.lg))
+                        .clickable { branchMenu = true; state.loadBranches() }
+                        .handCursor(),
                 ) {
-                    Icon(
-                        imageVector = ScmIcons.Branch,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(IconSize.xs),
-                    )
-                    Text(
-                        text = state.branch,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.widthIn(max = 120.dp),
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Space.xs),
+                        modifier = Modifier.padding(horizontal = Space.sm, vertical = Space.xs),
+                    ) {
+                        Icon(
+                            imageVector = ScmIcons.Branch,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(IconSize.xs),
+                        )
+                        Text(
+                            text = state.branch,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.widthIn(max = 120.dp),
+                        )
+                    }
                 }
-            }
-            BranchMenu(state, branchMenu) { branchMenu = false }
+            },
+        ) {
+            BranchMenu(state) { branchMenu = false }
         }
         if (state.ahead > 0 || state.behind > 0) {
             Text(
@@ -237,12 +246,14 @@ private fun Toolbar(state: ScmState) {
         // Sign-in and the history page behind one button: a drawer this narrow cannot hold six tap
         // targets in a row without the branch name losing to them.
         var overflow by remember { mutableStateOf(false) }
-        Box {
-            HeaderIcon(jcIcon(JCodeIcon.MoreVert), "More") { overflow = true }
-            DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
-                MenuItem("Branches & history…", ScmIcons.Branch) { overflow = false; state.openManage() }
-                MenuItem("GitHub sign-in…", ScmIcons.GitHub) { overflow = false; state.openGitHub() }
-            }
+        PopoverAnchor(
+            expanded = overflow,
+            onDismiss = { overflow = false },
+            alignEnd = true,
+            anchor = { HeaderIcon(jcIcon(JCodeIcon.MoreVert), "More") { overflow = true } },
+        ) {
+            PopoverItem("Branches & history…", ScmIcons.Branch) { overflow = false; state.openManage() }
+            PopoverItem("GitHub sign-in…", ScmIcons.GitHub) { overflow = false; state.openGitHub() }
         }
     }
 }
@@ -257,7 +268,10 @@ private fun Toolbar(state: ScmState) {
 private fun RepoChip(state: ScmState) {
     var menu by remember { mutableStateOf(false) }
     val active = state.repo ?: return
-    Box {
+    PopoverAnchor(
+        expanded = menu,
+        onDismiss = { menu = false },
+        anchor = {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Space.xxs),
@@ -287,72 +301,58 @@ private fun RepoChip(state: ScmState) {
                 modifier = Modifier.size(IconSize.xs),
             )
         }
-        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-            state.repos.forEach { info ->
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            text = info.name,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = if (info.root == active.root) FontWeight.SemiBold else FontWeight.Normal,
-                            color = if (info.root == active.root) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurface,
-                        )
-                    },
-                    onClick = { menu = false; state.selectRepo(info) },
-                )
-            }
+        },
+    ) {
+        PopoverLabel("Repositories")
+        state.repos.forEach { info ->
+            PopoverItem(
+                label = info.name,
+                icon = if (info.root == active.root) jcIcon(JCodeIcon.Folder) else null,
+                selected = info.root == active.root,
+            ) { menu = false; state.selectRepo(info) }
         }
     }
 }
 
+/**
+ * Switch branch, or start one.
+ *
+ * The branches come after the two actions rather than before them: the list is unbounded and the
+ * actions are not, and a menu whose fixed entries move down as the repository grows is a menu you
+ * have to read every time.
+ */
 @Composable
-private fun MenuItem(label: String, icon: ImageVector, onClick: () -> Unit) {
-    DropdownMenuItem(
-        text = { Text(label, style = MaterialTheme.typography.bodySmall) },
-        leadingIcon = { Icon(icon, null, modifier = Modifier.size(IconSize.xs)) },
-        onClick = onClick,
-    )
-}
-
-@Composable
-private fun BranchMenu(state: ScmState, expanded: Boolean, onDismiss: () -> Unit) {
+private fun ColumnScope.BranchMenu(state: ScmState, onDismiss: () -> Unit) {
     var creating by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
-    DropdownMenu(expanded = expanded, onDismissRequest = { creating = false; onDismiss() }) {
-        if (creating) {
-            Box(modifier = Modifier.padding(horizontal = Space.sm, vertical = Space.xs)) {
-                OutlinedTextField(
-                    value = newName,
-                    onValueChange = { newName = it },
-                    placeholder = { Text("New branch name", style = MaterialTheme.typography.bodySmall) },
-                    textStyle = MaterialTheme.typography.bodySmall,
-                    singleLine = true,
-                    shape = RoundedCornerShape(Radius.md),
-                )
-            }
-            DropdownMenuItem(
-                text = { Text("Create and switch", style = MaterialTheme.typography.bodySmall) },
-                enabled = newName.isNotBlank(),
-                onClick = { state.createBranch(newName); newName = ""; creating = false; onDismiss() },
-            )
-            return@DropdownMenu
-        }
-        MenuItem("New branch…", jcIcon(JCodeIcon.Add)) { creating = true }
-        MenuItem("Branches & history…", ScmIcons.Branch) { onDismiss(); state.openManage() }
+    if (creating) {
+        OutlinedTextField(
+            value = newName,
+            onValueChange = { newName = it },
+            placeholder = { Text("New branch name", style = MaterialTheme.typography.bodySmall) },
+            textStyle = MaterialTheme.typography.bodySmall,
+            singleLine = true,
+            shape = RoundedCornerShape(Radius.md),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = Space.sm, vertical = Space.xxs),
+        )
+        PopoverItem(
+            label = "Create and switch",
+            icon = jcIcon(JCodeIcon.Add),
+            enabled = newName.isNotBlank(),
+        ) { state.createBranch(newName); newName = ""; creating = false; onDismiss() }
+        return
+    }
+    PopoverItem("New branch…", jcIcon(JCodeIcon.Add)) { creating = true }
+    PopoverItem("Branches & history…", ScmIcons.Branch) { onDismiss(); state.openManage() }
+    if (state.branches.isNotEmpty()) {
+        PopoverDivider()
+        PopoverLabel("Switch to")
         state.branches.forEach { name ->
-            DropdownMenuItem(
-                text = {
-                    Text(
-                        text = name,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = if (name == state.branch) FontWeight.SemiBold else FontWeight.Normal,
-                        color = if (name == state.branch) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurface,
-                    )
-                },
-                onClick = { if (name != state.branch) state.switchBranch(name); onDismiss() },
-            )
+            PopoverItem(
+                label = name,
+                icon = if (name == state.branch) ScmIcons.Branch else null,
+                selected = name == state.branch,
+            ) { if (name != state.branch) state.switchBranch(name); onDismiss() }
         }
     }
 }
@@ -377,6 +377,7 @@ private fun HeaderIcon(icon: ImageVector, label: String, onClick: () -> Unit) {
  * failed for want of a git identity, the two fields and their Save button grew past the bottom edge
  * with nothing to scroll.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun RepoBody(state: ScmState) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -392,13 +393,13 @@ private fun RepoBody(state: ScmState) {
             }
 
             if (state.conflicts.isNotEmpty()) {
-                item { SectionHeader(state, "Conflicts", state.conflicts.size) }
+                stickyHeader { SectionHeader(state, "Conflicts", state.conflicts.size) }
                 if ("Conflicts" !in state.collapsedSections) {
                     section(state, state.conflicts, Section.Conflict)
                 }
             }
 
-            item {
+            stickyHeader {
                 SectionHeader(state, "Staged", state.staged.size) {
                     if (state.staged.isNotEmpty()) BulkAction("Unstage all") { state.unstageAll() }
                 }
@@ -411,7 +412,7 @@ private fun RepoBody(state: ScmState) {
                 }
             }
 
-            item {
+            stickyHeader {
                 SectionHeader(state, "Changes", state.unstaged.size) {
                     if (state.unstaged.isNotEmpty()) {
                         BulkAction("Stage all") { state.stageAll() }
@@ -429,7 +430,7 @@ private fun RepoBody(state: ScmState) {
             }
 
             if (state.stashes.isNotEmpty()) {
-                item {
+                stickyHeader {
                     SectionHeader(state, "Stashes", state.stashes.size) {
                         BulkAction("Pop latest") { state.stashPopLatest() }
                     }
@@ -533,9 +534,9 @@ private fun StashRow(state: ScmState, entry: StashEntry) {
 private fun EmptyLine(text: String) {
     Text(
         text = text,
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = Space.xs, vertical = Space.s),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+        modifier = Modifier.padding(start = Space.ms, end = Space.xs, top = Space.xxs, bottom = Space.xs),
     )
 }
 
@@ -593,26 +594,30 @@ private fun CommitBox(state: ScmState) {
                 busy = state.busy,
                 modifier = Modifier.weight(1f),
             )
-            Box {
-                CompactFilledButton(
-                    text = "⌄",
-                    onClick = { menu = true },
-                    enabled = !state.busy,
-                )
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    CommitItem("Commit", state.canCommit) {
-                        menu = false; state.commitVariant(CommitVariant.Plain)
-                    }
-                    // Amend is the one that works without a message: it reuses the last commit's.
-                    CommitItem("Commit (Amend)", !state.busy) {
-                        menu = false; state.commitVariant(CommitVariant.Amend)
-                    }
-                    CommitItem("Commit & Push", state.canCommit) {
-                        menu = false; state.commitVariant(CommitVariant.Push)
-                    }
-                    CommitItem("Commit & Sync", state.canCommit) {
-                        menu = false; state.commitVariant(CommitVariant.Sync)
-                    }
+            PopoverAnchor(
+                expanded = menu,
+                onDismiss = { menu = false },
+                alignEnd = true,
+                anchor = {
+                    CompactFilledButton(
+                        text = "⌄",
+                        onClick = { menu = true },
+                        enabled = !state.busy,
+                    )
+                },
+            ) {
+                PopoverItem("Commit", jcIcon(JCodeIcon.Save), enabled = state.canCommit) {
+                    menu = false; state.commitVariant(CommitVariant.Plain)
+                }
+                // Amend is the one that works without a message: it reuses the last commit's.
+                PopoverItem("Commit (Amend)", jcIcon(JCodeIcon.Undo), enabled = !state.busy) {
+                    menu = false; state.commitVariant(CommitVariant.Amend)
+                }
+                PopoverItem("Commit & Push", ScmIcons.Push, enabled = state.canCommit) {
+                    menu = false; state.commitVariant(CommitVariant.Push)
+                }
+                PopoverItem("Commit & Sync", ScmIcons.Fetch, enabled = state.canCommit) {
+                    menu = false; state.commitVariant(CommitVariant.Sync)
                 }
             }
         }
@@ -660,20 +665,19 @@ private fun IdentityField(value: String, placeholder: String, onValueChange: (St
     )
 }
 
-@Composable
-private fun CommitItem(label: String, enabled: Boolean, onClick: () -> Unit) {
-    DropdownMenuItem(
-        text = { Text(label, style = MaterialTheme.typography.bodySmall) },
-        enabled = enabled,
-        onClick = onClick,
-    )
-}
-
 /**
  * A section that folds away, with its count and its bulk actions.
  *
- * The count is a chip rather than a number beside the title: at a glance the panel should say how
- * much is waiting, and a bare digit next to a word does not.
+ * Deliberately quiet. The app's [ManagerGroupHeader] is built for settings and manager screens,
+ * where a handful of headings sit far apart above big cards — used here it put a line of primary
+ * blue at body size every few rows, and the filenames, which are the content, lost to their own
+ * headings. A small tracked-out label in the muted colour recedes far enough for the list to read.
+ *
+ * The count sits against the title rather than floating off to the right: it belongs to the word,
+ * and away at the margin it read as a separate control.
+ *
+ * The whole strip is the collapse target, so folding a section away is a tap anywhere along it
+ * rather than an aim at a chevron.
  */
 @Composable
 private fun SectionHeader(
@@ -683,49 +687,202 @@ private fun SectionHeader(
     actions: (@Composable () -> Unit)? = null,
 ) {
     val collapsed = title in state.collapsedSections
-    ManagerGroupHeader(
-        title = title,
-        modifier = Modifier.clickable { state.toggleSection(title) }.handCursor(),
-        trailing = {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.xxs)) {
-                if (!collapsed) actions?.invoke()
-                CountChip(count)
-                Icon(
-                    imageVector = jcIcon(if (collapsed) JCodeIcon.ChevronRight else JCodeIcon.ChevronDown),
-                    contentDescription = if (collapsed) "Expand" else "Collapse",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(IconSize.xs),
-                )
-            }
-        },
-    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            // The drawer sheet's own colour, so a header that has stuck to the top hides the rows
+            // sliding under it instead of showing a lighter band across them.
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable { state.toggleSection(title) }
+            .handCursor()
+            .padding(start = Space.xxs, end = Space.xxs, top = Space.sm, bottom = Space.xs),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Space.xs),
+    ) {
+        Icon(
+            imageVector = jcIcon(if (collapsed) JCodeIcon.ChevronRight else JCodeIcon.ChevronDown),
+            contentDescription = if (collapsed) "Expand" else "Collapse",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(IconSize.xs),
+        )
+        Text(
+            text = title.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = SectionTracking,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        CountChip(count)
+        Box(modifier = Modifier.weight(1f))
+        if (!collapsed) actions?.invoke()
+    }
 }
+
+/** Wide enough to read as a label rather than a shouted word. */
+private val SectionTracking = 0.08.em
 
 @Composable
 private fun CountChip(count: Int) {
     Surface(
         shape = RoundedCornerShape(Radius.pill),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
     ) {
         Text(
             text = count.toString(),
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = Space.s, vertical = Space.xxs),
+            modifier = Modifier.padding(horizontal = Space.xs, vertical = Space.none),
         )
     }
 }
 
+/**
+ * "Stage all" and its neighbours — muted, because they act on everything.
+ *
+ * A bulk action in the accent colour sat at the same weight as the section it belonged to, so a
+ * header of four blue words offered no clue which one was the heading.
+ */
 @Composable
 private fun BulkAction(label: String, onClick: () -> Unit) {
-    TextButton(
-        onClick = onClick,
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = Space.s, vertical = Space.none),
-        modifier = Modifier.handCursor(),
-    ) {
-        Text(label, style = MaterialTheme.typography.labelSmall)
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .clip(RoundedCornerShape(Radius.sm))
+            .clickable(onClick = onClick)
+            .handCursor()
+            .padding(horizontal = Space.xs, vertical = Space.xxs),
+    )
+}
+
+// --- pop-overs ---------------------------------------------------------------------------------
+
+/**
+ * The panel's own menu surface.
+ *
+ * Material's `DropdownMenu` is built for a full-width screen: its rows are a touch target tall
+ * apiece, so four of them stood taller than the file list they were opened from and buried the
+ * branch you were trying to read. This keeps the same dismiss behaviour and the app's own surface,
+ * shape and outline, at roughly half the height.
+ *
+ * Anchored by measuring: the popup is positioned against the anchor's own top corner and pushed down
+ * by exactly the anchor's height, so it opens directly beneath whatever opened it rather than over
+ * the top of it.
+ */
+@Composable
+private fun PopoverAnchor(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    alignEnd: Boolean = false,
+    anchor: @Composable () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    var anchorHeight by remember { mutableStateOf(0) }
+    Box(modifier = modifier.onSizeChanged { anchorHeight = it.height }) {
+        anchor()
+        if (!expanded) return@Box
+        Popup(
+            alignment = if (alignEnd) Alignment.TopEnd else Alignment.TopStart,
+            offset = IntOffset(0, anchorHeight + PopoverGapPx),
+            onDismissRequest = onDismiss,
+            properties = PopupProperties(focusable = true),
+        ) {
+            Surface(
+                shape = RoundedCornerShape(Radius.lg),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                border = BorderStroke(StrokeWidth.hairline, MaterialTheme.colorScheme.outlineVariant),
+                shadowElevation = PopoverElevation,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .widthIn(min = PopoverMinWidth, max = PopoverMaxWidth)
+                        .heightIn(max = PopoverMaxHeight)
+                        .verticalScroll(rememberScrollState())
+                        .padding(vertical = Space.xs),
+                    content = content,
+                )
+            }
+        }
     }
+}
+
+private const val PopoverGapPx = 8
+private val PopoverElevation = 8.dp
+private val PopoverMinWidth = 176.dp
+private val PopoverMaxWidth = 280.dp
+
+/** Tall enough for a good handful of branches, short enough to stay a menu rather than a page. */
+private val PopoverMaxHeight = 320.dp
+
+/** One line of a pop-over. [selected] is for the entry you are already on. */
+@Composable
+private fun PopoverItem(
+    label: String,
+    icon: ImageVector? = null,
+    selected: Boolean = false,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val tint = when {
+        !enabled -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+        selected -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick)
+            .handCursor()
+            .padding(horizontal = Space.sm, vertical = Space.xs),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Space.sm),
+    ) {
+        // The icon column is held even when a row has no icon, so labels line up down the menu
+        // instead of stepping in and out with whichever entries happen to carry one.
+        Box(modifier = Modifier.size(IconSize.xs), contentAlignment = Alignment.Center) {
+            icon?.let {
+                Icon(
+                    imageVector = it,
+                    contentDescription = null,
+                    tint = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant else tint,
+                    modifier = Modifier.size(IconSize.xs),
+                )
+            }
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = tint,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/** A heading inside a pop-over — the same quiet label the sections use. */
+@Composable
+private fun PopoverLabel(text: String) {
+    Text(
+        text = text.uppercase(),
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = SectionTracking,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = Space.sm, end = Space.sm, top = Space.xs, bottom = Space.xxs),
+    )
+}
+
+@Composable
+private fun PopoverDivider() {
+    HorizontalDivider(
+        thickness = StrokeWidth.hairline,
+        color = MaterialTheme.colorScheme.outlineVariant,
+        modifier = Modifier.padding(vertical = Space.xs),
+    )
 }
 
 private enum class Section { Staged, Unstaged, Conflict }
