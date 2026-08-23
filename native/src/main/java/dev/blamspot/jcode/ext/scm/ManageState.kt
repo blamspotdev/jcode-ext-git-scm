@@ -28,8 +28,26 @@ internal data class LocalBranch(
 /** A branch on a remote, measured against the branch that is checked out. */
 internal data class RemoteBranch(val name: String, val incoming: Int = 0, val outgoing: Int = 0)
 
+/** Where a commit sits relative to what the branch tracks. */
+internal enum class CommitGroup {
+    /** On the upstream and not here yet. */
+    Incoming,
+
+    /** Here and not on the upstream yet. */
+    Outgoing,
+
+    /** On both — the history the two agree about. */
+    Shared,
+}
+
 /** One line of history. */
-internal data class Commit(val hash: String, val author: String, val relative: String, val subject: String)
+internal data class Commit(
+    val hash: String,
+    val author: String,
+    val relative: String,
+    val subject: String,
+    val group: CommitGroup = CommitGroup.Shared,
+)
 
 /**
  * Branches and history, for the page the panel's overflow opens.
@@ -150,21 +168,92 @@ internal class ManageState(
     }
 
     /**
+     * How far each remote branch is from the one checked out.
+     *
+     * A remote ref has no upstream of its own, so there is nothing to read the drift off — it has to
+     * be measured, one `rev-list` per row. They go in a single shell loop rather than one exec
+     * apiece, and the count is capped, so a repository with a long remote list cannot stall the
+     * page. Rows past the cap still appear; they just carry no counts.
+     */
+    private suspend fun measureRemotes(root: String, names: List<String>): List<RemoteBranch> {
+        if (names.isEmpty()) return emptyList()
+        val measured = names.take(REMOTE_MEASURE_LIMIT)
+        val g = Git.prefixFor(root)
+        val loop = "for r in " + measured.joinToString(" ") { Git.quote(it) } + "; do " +
+            "printf '%s\t' \"\$r\"; " + g + "rev-list --left-right --count \"HEAD...\$r\" 2>/dev/null; " +
+            "printf '\n'; done"
+        val r = git.shell(root, loop, timeoutMs = 60_000L)
+        // `--left-right --count A...B` prints what only A has, then what only B has. From HEAD's
+        // side that is what we would send, then what we would receive.
+        val drift = HashMap<String, Pair<Int, Int>>()
+        if (r.ok) {
+            r.stdout.lines().forEach { line ->
+                val parts = line.split('\t')
+                if (parts.size >= 3) {
+                    drift[parts[0]] = (parts[2].trim().toIntOrNull() ?: 0) to (parts[1].trim().toIntOrNull() ?: 0)
+                }
+            }
+        }
+        return names.map { name ->
+            val d = drift[name]
+            RemoteBranch(name, d?.first ?: 0, d?.second ?: 0)
+        }
+    }
+
+    /**
      * Fill the history card.
      *
      * The whole history of the branch you are on, or the last few of one you asked about — the
      * limit follows the subject, so the card never claims to be a full history of a branch it only
      * sampled.
      */
+    /**
+     * Fill the history card, sorted by which side of the upstream each commit is on.
+     *
+     * "How far ahead am I" is answered by a number in the branch row; "which commits are those" the
+     * history has to answer, and a flat list cannot. So the log is asked three things — what the
+     * upstream has and we do not, what we have and it does not, and what both agree about from the
+     * merge base back — and the card shows them in that order.
+     *
+     * A branch with no upstream has no sides, so it gets one plain log.
+     */
     private suspend fun loadCommits() {
         val root = repo ?: return
         val target = historyBranch
+        val ref = target.ifEmpty { "HEAD" }
         val limit = if (target.isEmpty()) FULL_HISTORY else RECENT_COMMITS
-        val ref = if (target.isEmpty()) "" else " " + Git.quote(target)
-        val r = git.run(root, "log -n " + limit + " --pretty=format:" + Git.quote(LOG_FORMAT) + ref)
+        // Resolved here rather than in the shell: a `$VAR` would have to be quoted against branch
+        // names with spaces in them, and every quoting scheme has an input that escapes it.
+        val upstream = git.run(root, "rev-parse --abbrev-ref " + Git.quote(ref + "@{upstream}") + " 2>/dev/null")
+            .let { if (it.ok) it.stdout.trim() else "" }
+        val base = if (upstream.isEmpty()) "" else {
+            git.run(root, "merge-base " + Git.quote(ref) + " " + Git.quote(upstream) + " 2>/dev/null")
+                .let { if (it.ok) it.stdout.trim() else "" }
+        }
+        val r = git.shell(root, historyScript(root, ref, upstream, base, limit), timeoutMs = 60_000L)
         historyError = if (r.ok) null else r.failure
         commits.replaceWith(if (r.ok) parseCommits(r.stdout) else emptyList())
     }
+
+    /**
+     * The logs, in one command.
+     *
+     * Each line carries the side it came from as its first field. Three separate execs would be
+     * three round trips through proot to draw one card.
+     */
+    private fun historyScript(root: String, ref: String, upstream: String, base: String, limit: Int): String {
+        val g = Git.prefixFor(root)
+        val here = Git.quote(ref)
+        // `--pretty=format:` omits the trailing newline, so each log needs one after it or the next
+        // log's first line arrives glued to this one's last.
+        fun log(marker: String, args: String) =
+            g + "log -n " + limit + " --pretty=format:" + Git.quote(marker + "%x1f" + LOG_FORMAT) + " " + args + "; echo"
+        if (upstream.isEmpty()) return log("=", here)
+        val there = Git.quote(upstream)
+        val shared = if (base.isEmpty()) "" else "; " + log("=", Git.quote(base))
+        return log(">", there + " --not " + here) + "; " + log("<", here + " --not " + there) + shared
+    }
+
 
     /**
      * Point the history card at [name] and bring it into view.
@@ -189,48 +278,21 @@ internal class ManageState(
 
     private fun parseCommits(text: String): List<Commit> = text.lines()
         .filter { it.isNotBlank() }
-        .map { line ->
+        .mapNotNull { line ->
             val p = line.split(UNIT_SEPARATOR)
+            if (p.size < 5) return@mapNotNull null
             Commit(
-                hash = p.getOrElse(0) { "" },
-                author = p.getOrElse(1) { "" },
-                relative = p.getOrElse(2) { "" },
-                subject = p.getOrElse(3) { "" },
+                hash = p[1],
+                author = p[2],
+                relative = p[3],
+                subject = p[4],
+                group = when (p[0]) {
+                    ">" -> CommitGroup.Incoming
+                    "<" -> CommitGroup.Outgoing
+                    else -> CommitGroup.Shared
+                },
             )
         }
-
-    /**
-     * How far each remote branch is from the one checked out.
-     *
-     * A remote ref has no upstream of its own, so there is nothing to read the drift off — it has to
-     * be measured, one `rev-list` per row. They go in a single shell loop rather than one exec
-     * apiece, and the count is capped, so a repository with a long remote list cannot stall the
-     * page. Rows past the cap still appear; they just carry no counts.
-     */
-    private suspend fun measureRemotes(root: String, names: List<String>): List<RemoteBranch> {
-        if (names.isEmpty()) return emptyList()
-        val measured = names.take(REMOTE_MEASURE_LIMIT)
-        val g = Git.prefixFor(root)
-        val loop = "for r in " + measured.joinToString(" ") { Git.quote(it) } + "; do " +
-            "printf '%s\\t' \"\$r\"; " + g + "rev-list --left-right --count \"HEAD...\$r\" 2>/dev/null; " +
-            "printf '\\n'; done"
-        val r = git.shell(root, loop, timeoutMs = 60_000L)
-        // `--left-right --count A...B` prints what only A has, then what only B has. From HEAD's
-        // side that is what we would send, then what we would receive.
-        val drift = HashMap<String, Pair<Int, Int>>()
-        if (r.ok) {
-            r.stdout.lines().forEach { line ->
-                val parts = line.split('	')
-                if (parts.size >= 3) {
-                    drift[parts[0]] = (parts[2].trim().toIntOrNull() ?: 0) to (parts[1].trim().toIntOrNull() ?: 0)
-                }
-            }
-        }
-        return names.map { name ->
-            val d = drift[name]
-            RemoteBranch(name, d?.first ?: 0, d?.second ?: 0)
-        }
-    }
 
     // --- actions ------------------------------------------------------------------------------
 

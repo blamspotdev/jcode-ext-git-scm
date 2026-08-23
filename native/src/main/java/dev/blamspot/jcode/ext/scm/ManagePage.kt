@@ -333,10 +333,60 @@ private fun CommitsCard(state: ManageState) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            else -> state.commits.forEachIndexed { i, c ->
-                if (i > 0) RowDivider()
-                CommitRow(c)
+            else -> CommitGroup.entries.forEach { group ->
+                val rows = state.commits.filter { it.group == group }
+                if (rows.isEmpty()) return@forEach
+                GroupHeader(group, rows.size)
+                rows.forEachIndexed { i, c ->
+                    if (i > 0) RowDivider()
+                    CommitRow(c)
+                }
             }
+        }
+    }
+}
+
+/**
+ * Which side of the upstream the commits under it are on.
+ *
+ * The branch row says "2 incoming, 2 outgoing"; this says which two. Shared history gets a heading
+ * too, so the list never leaves you guessing whether an unlabelled run is settled or just unlabelled.
+ */
+@Composable
+private fun GroupHeader(group: CommitGroup, count: Int) {
+    val label = when (group) {
+        CommitGroup.Incoming -> "Incoming"
+        CommitGroup.Outgoing -> "Outgoing · not pushed"
+        CommitGroup.Shared -> "History"
+    }
+    val tint = when (group) {
+        CommitGroup.Incoming -> MaterialTheme.colorScheme.primary
+        CommitGroup.Outgoing -> JCodeTheme.semanticColors.warning
+        CommitGroup.Shared -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = Space.sm),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Space.xs),
+    ) {
+        when (group) {
+            CommitGroup.Incoming -> Icon(ScmIcons.Pull, null, tint = tint, modifier = Modifier.size(IconSize.xs))
+            CommitGroup.Outgoing -> Icon(ScmIcons.Push, null, tint = tint, modifier = Modifier.size(IconSize.xs))
+            CommitGroup.Shared -> Unit
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = tint,
+        )
+        // Only where it adds something: "History" is however much of it was read, not a total.
+        if (group != CommitGroup.Shared) {
+            Text(
+                text = count.toString(),
+                style = MaterialTheme.typography.labelSmall,
+                color = tint,
+            )
         }
     }
 }
