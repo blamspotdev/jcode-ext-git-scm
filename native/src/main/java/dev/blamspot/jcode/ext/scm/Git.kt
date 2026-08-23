@@ -20,15 +20,30 @@ import dev.blamspot.jcode.ext.api.NativeHost
 internal class Git(private val host: NativeHost) {
 
     suspend fun run(workdir: String?, args: String, timeoutMs: Long = 60_000L): NativeExecResult =
-        host.exec(PREFIX + args, workdir = workdir, timeoutMs = timeoutMs)
+        host.exec(prefixFor(workdir) + args, workdir = workdir, timeoutMs = timeoutMs)
 
     /** A plain command in [workdir] — for the handful of things that are not git. */
     suspend fun shell(workdir: String?, command: String, timeoutMs: Long = 60_000L): NativeExecResult =
         host.exec(command, workdir = workdir, timeoutMs = timeoutMs)
 
     companion object {
-        private const val PREFIX =
-            "git -c safe.directory='*' -c core.quotePath=false -c core.createObject=rename "
+        private const val OPTIONS =
+            " -c safe.directory='*' -c core.quotePath=false -c core.createObject=rename "
+
+        /**
+         * `git`, carrying its settings and naming the directory it is to work in.
+         *
+         * `-C` rather than the working directory alone, because a working directory that does not
+         * exist is not an error anyone reports — the command simply runs wherever it started. That
+         * is how an `init` meant for a project created a repository at the filesystem root instead,
+         * and from then on every project in the workspace resolved to that root. With `-C` the same
+         * call fails and names the path it could not enter.
+         *
+         * Public because hand-written pipelines splice it in, and a pipeline carrying different
+         * settings would be a second, quietly divergent git.
+         */
+        fun prefixFor(workdir: String?): String =
+            if (workdir.isNullOrEmpty()) "git$OPTIONS" else "git -C " + quote(workdir) + OPTIONS
 
         /** One shell word. Paths come from git and from the user's workspace; neither is trusted input. */
         fun quote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
@@ -51,6 +66,19 @@ internal data class FileEntry(
     val display: String,
     val untracked: Boolean,
 )
+
+/**
+ * Whether the command actually ran and succeeded.
+ *
+ * `exitCode` alone is not enough: when the workbench never got the command to a shell it answers with
+ * [NativeExecResult.error] set and everything else empty, which reads as a clean run to anything
+ * looking only at the number.
+ */
+internal val NativeExecResult.ok: Boolean get() = error == null && exitCode == 0
+
+/** Why it failed, in whatever the run left behind — git's own words for preference. */
+internal val NativeExecResult.failure: String
+    get() = output.trim().ifBlank { error ?: "The command failed with exit code $exitCode." }
 
 internal data class RepoInfo(val root: String, val name: String)
 

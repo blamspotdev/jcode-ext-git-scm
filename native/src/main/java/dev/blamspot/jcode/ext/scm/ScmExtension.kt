@@ -34,6 +34,7 @@ class ScmExtension : JCodeNativeExtension {
                 when (name) {
                     "filesChanged" -> state.scheduleRefresh()
                     "explorerAction" -> handleExplorerAction(state, json)
+                    "config" -> state.loadSettings()
                 }
             }
             onDispose { handle.close() }
