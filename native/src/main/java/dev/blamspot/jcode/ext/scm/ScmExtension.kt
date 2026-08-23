@@ -59,6 +59,12 @@ class ScmExtension : JCodeNativeExtension {
                 CommitPage(commit)
             }
 
+            view.startsWith("conflicts:") -> {
+                val conflicts = remember(host, scope, view) { ConflictsState(host, scope, view) }
+                LaunchedEffect(conflicts) { conflicts.boot() }
+                ConflictsPage(conflicts)
+            }
+
             view.startsWith("merge:") -> {
                 val merge = remember(host, scope, view) { MergeState(host, scope, view) }
                 LaunchedEffect(merge) { merge.boot() }

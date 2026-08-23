@@ -404,7 +404,11 @@ private fun RepoBody(state: ScmState) {
             }
 
             if (state.conflicts.isNotEmpty()) {
-                stickyHeader { SectionHeader(state, "Conflicts", state.conflicts.size) }
+                stickyHeader {
+                    SectionHeader(state, "Conflicts", state.conflicts.size) {
+                        BulkAction("Resolve all…") { state.openConflicts() }
+                    }
+                }
                 if ("Conflicts" !in state.collapsedSections) {
                     section(state, state.conflicts, Section.Conflict)
                 }

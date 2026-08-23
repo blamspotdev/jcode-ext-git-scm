@@ -103,6 +103,35 @@ internal class MergeState(
     var conflicted by mutableStateOf(false)
         private set
 
+    /** Which conflict the navigation is on. Zero-based over the conflicts, not over the segments. */
+    var current by mutableStateOf(0)
+        private set
+
+    /** Side by side needs width; below that the three panes stack. */
+    var split by mutableStateOf(true)
+
+    /** How many conflicts there are, which is what "3 of 7" counts. */
+    val conflictCount: Int get() = segments.count { it.conflict }
+
+    /** The index in [segments] of conflict number [n], for scrolling to it. */
+    fun segmentOf(n: Int): Int {
+        var seen = 0
+        segments.forEachIndexed { i, segment ->
+            if (segment.conflict) {
+                if (seen == n) return i
+                seen++
+            }
+        }
+        return 0
+    }
+
+    /** The 0-based conflict number of the segment at [index], for labelling it. */
+    fun conflictNumberAt(index: Int): Int = segments.take(index).count { it.conflict }
+
+    fun goTo(n: Int) {
+        current = n.coerceIn(0, (conflictCount - 1).coerceAtLeast(0))
+    }
+
     fun boot() {
         scope.launch {
             loading = true

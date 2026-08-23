@@ -570,6 +570,17 @@ internal class ScmState(
      * a stash route ends in "stash@{0}" — which says where the stash sits in a list, not what the
      * user called it. Only this panel has read the name.
      */
+    /**
+     * Open the page listing what is left to resolve.
+     *
+     * The drawer's own section is the quick view; this is for a merge that touches more files than a
+     * column a few hundred pixels wide can show at once.
+     */
+    fun openConflicts() {
+        val root = repo?.root ?: return
+        host.openView("conflicts:" + encodeUri(root), title = "Conflicts")
+    }
+
     fun openStash(entry: StashEntry) {
         val root = repo?.root ?: return
         host.openView(
