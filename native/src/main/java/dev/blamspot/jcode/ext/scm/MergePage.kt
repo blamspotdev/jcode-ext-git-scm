@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -34,6 +35,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -84,14 +87,29 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val wide = maxWidth >= MergeSplitMinWidth
         LaunchedEffect(wide) { state.split = wide }
-        Column(modifier = Modifier.fillMaxSize()) {
-            MergeHeader(state, ::jump)
-            HorizontalDivider(thickness = StrokeWidth.hairline, color = MaterialTheme.colorScheme.outlineVariant)
-            state.message?.let {
-                Box(modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.xs)) {
-                    StatusText(it, state.failed)
-                }
+        // The panes keep the most room they have ever been given here. When the keyboard takes half
+        // the screen — which in landscape is most of it — the page scrolls to reach them rather than
+        // crushing three panes into what is left, and it is the page that moves, not the window.
+        // Measured rather than fixed, so a closed keyboard still fits exactly on any screen.
+        val density = LocalDensity.current
+        var chrome by remember { mutableStateOf(0.dp) }
+        var roomiest by remember(maxWidth) { mutableStateOf(0.dp) }
+        // Not before the header has been measured, or the first frame — when it still reports no
+        // height — sets a mark that is a whole header too tall and never comes down again.
+        val free = maxHeight - chrome
+        if (chrome > 0.dp && free > roomiest) roomiest = free
+        val panes = roomiest.coerceAtLeast(MergeMinPaneArea)
+
+        Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+            Column(modifier = Modifier.onSizeChanged { chrome = with(density) { it.height.toDp() } }) {
+                MergeHeader(state, ::jump)
                 HorizontalDivider(thickness = StrokeWidth.hairline, color = MaterialTheme.colorScheme.outlineVariant)
+                state.message?.let {
+                    Box(modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.xs)) {
+                        StatusText(it, state.failed)
+                    }
+                    HorizontalDivider(thickness = StrokeWidth.hairline, color = MaterialTheme.colorScheme.outlineVariant)
+                }
             }
             when {
                 state.loading -> Note("Reading the file…", spinner = true)
@@ -101,7 +119,7 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
                         "\"Mark resolved\" in the Merge Changes list.",
                 )
 
-                else -> {
+                else -> Column(modifier = Modifier.height(panes)) {
                     Sides(state, rows, top, wide, modifier = Modifier.weight(SidesWeight))
                     HorizontalDivider(
                         thickness = StrokeWidth.thin,
@@ -473,6 +491,9 @@ private const val MergedWeight = 0.45f
 
 /** Below this the two sides become two columns of ellipsis, so only Theirs is shown. */
 private val MergeSplitMinWidth = 640.dp
+
+/** A floor for the pane area, for a window too short to have established one of its own. */
+private val MergeMinPaneArea = 200.dp
 
 /** The one type scale the three panes and the editor all use. */
 internal val CodeSize = 13.sp

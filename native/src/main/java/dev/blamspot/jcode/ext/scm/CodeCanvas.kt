@@ -1,6 +1,7 @@
 package dev.blamspot.jcode.ext.scm
 
 import android.content.Context
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.text.Editable
 import android.text.InputType
@@ -100,6 +101,11 @@ internal fun CodeCanvas(
  */
 private class CodeEditText(context: Context) : EditText(context) {
     var settingFromState = false
+
+    // Moving the cursor makes a TextView ask every parent to scroll it into view. Here that walks
+    // all the way out and takes the page with it, so the two versions being merged leave the screen
+    // at the moment they are most needed. The panes keep the position they were put in.
+    override fun requestRectangleOnScreen(rectangle: Rect, immediate: Boolean): Boolean = false
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
         val connection = super.onCreateInputConnection(outAttrs)
