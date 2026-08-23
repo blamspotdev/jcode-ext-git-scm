@@ -20,8 +20,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -36,13 +34,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dev.blamspot.jcode.design.CompactContextMenu
 import dev.blamspot.jcode.design.CompactFilledButton
 import dev.blamspot.jcode.design.CompactOutlinedButton
@@ -322,19 +322,17 @@ private fun Merged(
  * The conflict being worked on, as an editing surface rather than a form field.
  *
  * A bordered, rounded input dropped into the middle of three code panes reads as a dialog that got
- * loose. This is the pane: the same monospace, the same gutter width, its numbers carrying on from
- * the lines above it, flush with the rows on either side. The gutter is one multi-line Text sharing
- * the field's exact text style, which is what keeps the numbers on their lines as you type — two
- * different styles would drift apart by a fraction of a line each row.
+ * loose. This is the pane: the same monospace at the same size, the same gutter width, its numbers
+ * carrying on from the lines above it, flush with the rows on either side.
+ *
+ * The gutter and the canvas are pinned to one line height in sp rather than left to their own
+ * metrics — a Compose Text and an Android EditText do not agree on leading, and a fraction of a line
+ * per row is all it takes for the numbers to stop being beside their lines.
  */
 @Composable
 private fun InlineEditor(state: MergeState, conflict: Int, firstLine: Int) {
     val colors = MaterialTheme.colorScheme
     val value = state.resolutionOf(conflict)
-    val code = MaterialTheme.typography.bodySmall.copy(
-        fontFamily = FontFamily.Monospace,
-        color = colors.onSurface,
-    )
     val count = if (value.isEmpty()) 1 else value.count { it == '\n' } + 1
     Row(
         modifier = Modifier
@@ -349,19 +347,27 @@ private fun InlineEditor(state: MergeState, conflict: Int, firstLine: Int) {
         )
         Text(
             text = (0 until count).joinToString("\n") { (firstLine + it).toString() },
-            style = code.copy(color = colors.onSurfaceVariant.copy(alpha = 0.55f)),
+            style = TextStyle(
+                fontFamily = FontFamily.Monospace,
+                fontSize = CodeSize,
+                lineHeight = CodeLineHeight,
+                color = colors.onSurfaceVariant.copy(alpha = 0.55f),
+                platformStyle = PlatformTextStyle(includeFontPadding = false),
+                lineHeightStyle = LineHeightStyle(
+                    alignment = LineHeightStyle.Alignment.Center,
+                    trim = LineHeightStyle.Trim.None,
+                ),
+            ),
             textAlign = TextAlign.End,
             modifier = Modifier.width(GutterWidth).padding(end = Space.xs),
         )
-        BasicTextField(
+        CodeCanvas(
             value = value,
             onValueChange = { state.editCurrent(it) },
-            textStyle = code,
-            cursorBrush = SolidColor(colors.primary),
-            keyboardOptions = KeyboardOptions(
-                capitalization = KeyboardCapitalization.None,
-                autoCorrectEnabled = false,
-            ),
+            textColor = colors.onSurface,
+            cursorColor = colors.primary,
+            fontSize = CodeSize,
+            lineHeight = CodeLineHeight,
             modifier = Modifier.weight(1f).padding(end = Space.sm),
         )
     }
@@ -467,3 +473,7 @@ private const val MergedWeight = 0.45f
 
 /** Below this the two sides become two columns of ellipsis, so only Theirs is shown. */
 private val MergeSplitMinWidth = 640.dp
+
+/** The one type scale the three panes and the editor all use. */
+internal val CodeSize = 13.sp
+internal val CodeLineHeight = 18.sp
