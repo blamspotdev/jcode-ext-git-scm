@@ -59,6 +59,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
@@ -746,10 +747,13 @@ internal fun CompactField(
 ) {
     val colors = MaterialTheme.colorScheme
     val focus = LocalFocusManager.current
-    // The app's own field, to the pixel: Radius.xl, a thin outline at 60%, and a quarter-strength
-    // surface tint. Written out rather than reusing CompactSearchField because that one owns a
-    // search glyph and one line, and this holds a commit message — but a field in an extension that
-    // is nearly the app's field reads as a mistake, so it is the app's field or nothing.
+    // The app's own field, down to the type scale: SettingsTextFieldRow and CompactSearchField agree
+    // on Radius.xl, a quarter-strength surface tint and a thin outline at 60%, and this matches the
+    // rest of it too — bodyMedium, a placeholder at 60%, Space.ms of horizontal room, and the same
+    // 40 / 96dp heights. Written out rather than reused because neither of those takes a trailing
+    // action or a multi-line commit message; but a field that is *nearly* the app's field reads as
+    // a mistake rather than as a choice, so it is the app's field or it is nothing.
+    val single = maxLines == 1
     Surface(
         shape = RoundedCornerShape(Radius.xl),
         color = colors.surfaceVariant.copy(alpha = 0.25f),
@@ -757,23 +761,35 @@ internal fun CompactField(
         modifier = modifier.fillMaxWidth(),
     ) {
         Row(
+            // The row stays centred so a trailing action sits in the middle of the box however tall
+            // it grows; the text inside it starts at the top, which is where a message begins.
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .heightIn(min = FieldMinHeight)
-                .padding(start = Space.sm, end = if (trailing == null) Space.sm else Space.xxs),
+            modifier = Modifier.padding(
+                start = Space.ms,
+                end = if (trailing == null) Space.ms else Space.xxs,
+            ),
         ) {
-            Box(modifier = Modifier.weight(1f).padding(vertical = Space.s)) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    // Only the one-line case takes a floor. A multi-line field's height is
+                    // [minLines], which the message box sets deliberately — the app's own 96dp
+                    // would quietly overrule it in the name of matching the app.
+                    .heightIn(min = if (single) SingleLineHeight else Dp.Unspecified)
+                    .padding(vertical = if (single) Space.none else Space.sm),
+                contentAlignment = if (single) Alignment.CenterStart else Alignment.TopStart,
+            ) {
                 if (value.isEmpty()) {
                     Text(
                         text = placeholder,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = colors.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onSurfaceVariant.copy(alpha = 0.6f),
                     )
                 }
                 BasicTextField(
                     value = value,
                     onValueChange = onValueChange,
-                    textStyle = MaterialTheme.typography.bodySmall.copy(
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
                         color = colors.onSurface,
                         fontFamily = if (monospace) FontFamily.Monospace else FontFamily.Default,
                     ),
@@ -1270,5 +1286,5 @@ private fun LogSheet(text: String, onDismiss: () -> Unit) {
 /** Tall enough for a commit summary, short enough to leave the dialog looking like a dialog. */
 private val LogMaxHeight = 320.dp
 
-/** The height every field in the app settles at, so one in a panel is not a different size. */
-private val FieldMinHeight = 36.dp
+/** The height a one-line field settles at in the app, so one in a panel is not a different size. */
+private val SingleLineHeight = 40.dp
