@@ -28,9 +28,6 @@ internal data class LocalBranch(
 /** A branch on a remote, measured against the branch that is checked out. */
 internal data class RemoteBranch(val name: String, val incoming: Int = 0, val outgoing: Int = 0)
 
-/** A branch's recent commits, or why they could not be read. */
-internal data class CommitPreview(val branch: String, val commits: List<Commit>, val error: String?)
-
 /** One line of history. */
 internal data class Commit(val hash: String, val author: String, val relative: String, val subject: String)
 
@@ -65,8 +62,23 @@ internal class ManageState(
     var tab by mutableStateOf(BranchTab.Local)
     var confirm by mutableStateOf<Confirm?>(null)
 
-    /** A branch's recent history, while the dialog showing it is open. */
-    var preview by mutableStateOf<CommitPreview?>(null)
+    /**
+     * Which branch the history card is showing. Empty means the one checked out.
+     *
+     * The card is the only history on the page, so pointing it at another branch is the answer to
+     * "what does that branch carry" — rather than a second list somewhere else saying the same kind
+     * of thing in a different shape.
+     */
+    var historyBranch by mutableStateOf("")
+        private set
+
+    /** Why the history could not be read — a branch deleted out from under the card, usually. */
+    var historyError by mutableStateOf<String?>(null)
+        private set
+
+    /** Bumped when the history card should be scrolled into view. */
+    var historyRequest by mutableStateOf(0)
+        private set
 
     val local = mutableStateListOf<LocalBranch>()
     val remote = mutableStateListOf<RemoteBranch>()
@@ -137,33 +149,42 @@ internal class ManageState(
         remote.replaceWith(measureRemotes(root, names))
     }
 
+    /**
+     * Fill the history card.
+     *
+     * The whole history of the branch you are on, or the last few of one you asked about — the
+     * limit follows the subject, so the card never claims to be a full history of a branch it only
+     * sampled.
+     */
     private suspend fun loadCommits() {
         val root = repo ?: return
-        val r = git.run(root, "log -n 100 --pretty=format:" + Git.quote(LOG_FORMAT))
+        val target = historyBranch
+        val limit = if (target.isEmpty()) FULL_HISTORY else RECENT_COMMITS
+        val ref = if (target.isEmpty()) "" else " " + Git.quote(target)
+        val r = git.run(root, "log -n " + limit + " --pretty=format:" + Git.quote(LOG_FORMAT) + ref)
+        historyError = if (r.ok) null else r.failure
         commits.replaceWith(if (r.ok) parseCommits(r.stdout) else emptyList())
     }
 
     /**
-     * A branch's last few commits, read only.
+     * Point the history card at [name] and bring it into view.
      *
      * Deciding whether to check a branch out or merge it means knowing what it carries, and the
-     * history below the list only ever shows the current branch. One constant drives both this
-     * and the label that opens it, so the menu cannot promise a number the log does not return.
-     * A branch with fewer commits simply shows fewer; a read that fails shows git's own words
-     * rather than an empty box.
+     * card is already on the page — so it answers, rather than a dialog opening over the list the
+     * question was asked from.
      */
     fun showRecent(name: String) {
-        val root = repo ?: return
-        scope.launch {
-            val r = git.run(
-                root,
-                "log -n " + RECENT_COMMITS + " --pretty=format:" + Git.quote(LOG_FORMAT) +
-                    " " + Git.quote(name),
-                timeoutMs = 30_000L,
-            )
-            preview = if (r.ok) CommitPreview(name, parseCommits(r.stdout), null)
-            else CommitPreview(name, emptyList(), r.failure)
-        }
+        if (repo == null) return
+        historyBranch = name
+        historyRequest++
+        scope.launch { loadCommits() }
+    }
+
+    /** Point it back at the branch you are on. */
+    fun showCurrentHistory() {
+        if (historyBranch.isEmpty()) return
+        historyBranch = ""
+        scope.launch { loadCommits() }
     }
 
     private fun parseCommits(text: String): List<Commit> = text.lines()
@@ -369,5 +390,8 @@ private const val REMOTE_MEASURE_LIMIT = 40
 /** What a history line is made of, shared by the page's list and a branch's preview. */
 private const val LOG_FORMAT = "%h%x1f%an%x1f%ar%x1f%s"
 
-/** How many commits the branch preview shows — and says it will show. */
+/** How many commits another branch's sample shows — and says it will show. */
 internal const val RECENT_COMMITS = 10
+
+/** How far back the current branch's own history goes. */
+private const val FULL_HISTORY = 100

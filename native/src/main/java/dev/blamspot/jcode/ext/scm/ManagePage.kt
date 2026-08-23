@@ -7,22 +7,22 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,14 +30,13 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import dev.blamspot.jcode.design.AlertDialog
-import dev.blamspot.jcode.design.CompactFilledButton
 import dev.blamspot.jcode.design.IconSize
 import dev.blamspot.jcode.design.JCodeIcon
 import dev.blamspot.jcode.design.JCodeTheme
 import dev.blamspot.jcode.design.Radius
 import dev.blamspot.jcode.design.Space
 import dev.blamspot.jcode.design.jcIcon
+import kotlinx.coroutines.launch
 
 /**
  * Branches and history, full width in the editor area.
@@ -48,8 +47,16 @@ import dev.blamspot.jcode.design.jcIcon
  */
 @Composable
 internal fun ManagePage(state: ManageState, modifier: Modifier = Modifier) {
+    val list = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    // Asking a branch what it carries points the history card at it; the card is at the bottom of
+    // the page, so the answer has to be brought to the question rather than left to be found.
+    LaunchedEffect(state.historyRequest) {
+        if (state.historyRequest > 0) scope.launch { list.animateScrollToItem(HistoryItem) }
+    }
     Box(modifier = modifier.fillMaxSize()) {
         LazyColumn(
+            state = list,
             modifier = Modifier.fillMaxSize(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(Space.lg),
             verticalArrangement = Arrangement.spacedBy(Space.lg),
@@ -81,7 +88,6 @@ internal fun ManagePage(state: ManageState, modifier: Modifier = Modifier) {
         }
     }
     state.confirm?.let { c -> ConfirmDialog(c) { state.confirm = null } }
-    state.preview?.let { p -> CommitsDialog(p) { state.preview = null } }
 }
 
 @Composable
@@ -294,27 +300,54 @@ private val BranchNameMaxWidth = 320.dp
 
 @Composable
 private fun CommitsCard(state: ManageState) {
-    Card(title = "Commits") {
+    val other = state.historyBranch.isNotEmpty()
+    Card(
+        title = "Commits",
+        action = {
+            if (other) {
+                IconAction(
+                    icon = jcIcon(JCodeIcon.Close),
+                    label = "Back to " + state.branch,
+                ) { state.showCurrentHistory() }
+            }
+        },
+    ) {
         Text(
-            text = state.branch.ifBlank { "HEAD" },
+            // Named, and when it is a sample of another branch it says so: a card that showed ten
+            // of somebody's commits under a bare branch name would read as the whole of it.
+            text = state.historyBranch.ifBlank { state.branch }.ifBlank { "HEAD" } +
+                if (other) " · last $RECENT_COMMITS" else "",
             style = MaterialTheme.typography.labelMedium,
             fontFamily = FontFamily.Monospace,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = if (other) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        if (state.commits.isEmpty()) {
-            Text(
+        when {
+            state.historyError != null -> Text(
+                text = state.historyError.orEmpty(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            state.commits.isEmpty() -> Text(
                 "No commits yet.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        } else {
-            state.commits.forEachIndexed { i, c ->
+            else -> state.commits.forEachIndexed { i, c ->
                 if (i > 0) RowDivider()
                 CommitRow(c)
             }
         }
     }
 }
+
+/**
+ * Where the history card sits in the list: header, branches, commits.
+ *
+ * A literal because a lazy list is addressed by index and there is nothing else to address it by.
+ * It only has to hold while the page has these three items, which is what the `when` above builds.
+ */
+private const val HistoryItem = 2
 
 @Composable
 private fun CommitRow(commit: Commit) {
@@ -371,37 +404,3 @@ private fun Drift(icon: androidx.compose.ui.graphics.vector.ImageVector, count: 
     }
 }
 
-/**
- * A branch's recent commits, to read rather than to act on.
- *
- * Same row shape as the history below the branch list, so the two read alike — it is the same kind
- * of thing, asked of a different branch. Scrolls rather than growing, because a dialog that runs off
- * the screen has no way back.
- */
-@Composable
-private fun CommitsDialog(preview: CommitPreview, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(preview.branch) },
-        text = {
-            Column(
-                modifier = Modifier
-                    .heightIn(max = PreviewMaxHeight)
-                    .verticalScroll(rememberScrollState()),
-            ) {
-                when {
-                    preview.error != null -> Muted(preview.error)
-                    preview.commits.isEmpty() -> Muted("No commits on this branch.")
-                    else -> preview.commits.forEachIndexed { i, c ->
-                        if (i > 0) RowDivider()
-                        CommitRow(c)
-                    }
-                }
-            }
-        },
-        confirmButton = { CompactFilledButton(text = "Close", onClick = onDismiss) },
-    )
-}
-
-/** Tall enough for the ten it promises, short enough to stay a dialog. */
-private val PreviewMaxHeight = 360.dp
