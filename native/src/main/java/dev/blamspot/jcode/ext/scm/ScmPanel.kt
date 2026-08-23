@@ -589,9 +589,9 @@ private fun CommitBox(state: ScmState) {
             onMenuOpen = { menu = true },
             onMenuDismiss = { menu = false },
         ) {
-            PopoverItem("Commit", jcIcon(JCodeIcon.Save), enabled = state.canCommit) {
-                menu = false; state.commitVariant(CommitVariant.Plain)
-            }
+            // Plain Commit is the button this menu hangs off, so it is not repeated inside it: the
+            // menu carries the variants, which is the only reason to open it.
+            //
             // Amend is the one that works without a message: it reuses the last commit's.
             PopoverItem("Commit (Amend)", jcIcon(JCodeIcon.Undo), enabled = !state.busy) {
                 menu = false; state.commitVariant(CommitVariant.Amend)
