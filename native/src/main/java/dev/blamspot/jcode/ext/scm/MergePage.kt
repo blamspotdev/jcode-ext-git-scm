@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -117,7 +119,10 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
         },
     ) {
         val wide = maxWidth >= MergeSplitMinWidth
-        LaunchedEffect(wide) { state.split = wide }
+        // Two columns of monospace need real width. Below it only one side fits, so which one
+        // becomes a choice rather than a given — without it a phone held upright shows Theirs and
+        // no way at all to see what you had.
+        var showMine by remember { mutableStateOf(false) }
         // The panes keep the most room they have ever been given here. When the keyboard takes half
         // the screen — which in landscape is most of it — the page scrolls to reach them rather than
         // crushing three panes into what is left, and it is the page that moves, not the window.
@@ -228,7 +233,7 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
 
         Column(modifier = Modifier.fillMaxWidth().verticalScroll(page)) {
             Column(modifier = Modifier.onSizeChanged { chrome = with(density) { it.height.toDp() } }) {
-                MergeHeader(state, ::jump)
+                MergeHeader(state, wide, ::jump)
                 HorizontalDivider(thickness = StrokeWidth.hairline, color = MaterialTheme.colorScheme.outlineVariant)
                 state.message?.let {
                     Box(modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.xs)) {
@@ -246,7 +251,16 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
                 )
 
                 else -> Column(modifier = Modifier.height(panes)) {
-                    Sides(state, rows, top, wide, horizontal, modifier = Modifier.weight(SidesWeight))
+                    Sides(
+                        state,
+                        rows,
+                        top,
+                        wide,
+                        showMine,
+                        { showMine = it },
+                        horizontal,
+                        modifier = Modifier.weight(SidesWeight),
+                    )
                     HorizontalDivider(
                         thickness = StrokeWidth.thin,
                         color = MaterialTheme.colorScheme.outlineVariant,
@@ -258,13 +272,40 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * The toolbar, in one row or two.
+ *
+ * Everything on one row needs a desktop's width. On a phone held upright it does not fit, and what
+ * does not fit is not dropped but wrapped onto a second line — a button reading "Save & resol ve"
+ * over three lines is worse than a taller toolbar.
+ */
 @Composable
-private fun MergeHeader(state: MergeState, onJump: (Int) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = Space.lg, vertical = Space.sm),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Space.sm),
-    ) {
+private fun MergeHeader(state: MergeState, wide: Boolean, onJump: (Int) -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = Space.lg, vertical = Space.sm)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Space.sm),
+        ) {
+            Where(state, wide, onJump)
+            if (wide) Actions(state)
+        }
+        if (!wide && state.conflicted) {
+            Spacer(modifier = Modifier.height(Space.sm))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Space.sm),
+            ) {
+                Actions(state)
+            }
+        }
+    }
+}
+
+/** Which file, which conflict, and the way between them. */
+@Composable
+private fun RowScope.Where(state: MergeState, wide: Boolean, onJump: (Int) -> Unit) {
         Text(
             text = state.path,
             style = MaterialTheme.typography.titleSmall,
@@ -276,7 +317,7 @@ private fun MergeHeader(state: MergeState, onJump: (Int) -> Unit) {
         )
         if (!state.conflicted) {
             Box(modifier = Modifier.weight(1f))
-            return@Row
+            return
         }
         Muted("${state.current + 1}/${state.conflictCount}")
         CompactOutlinedButton(
@@ -290,8 +331,16 @@ private fun MergeHeader(state: MergeState, onJump: (Int) -> Unit) {
             enabled = state.current < state.conflictCount - 1,
         )
         Box(modifier = Modifier.weight(1f))
-        // Applied to the conflict the navigation is on, which is what makes this a toolbar rather
-        // than a control to be found again beside every block.
+        if (!wide) return
+}
+
+/**
+ * What to do with the conflict the navigation is on.
+ *
+ * Applied to that one rather than offered beside every block, which is what makes this a toolbar.
+ */
+@Composable
+private fun RowScope.Actions(state: MergeState) {
         Muted("Use:")
         CompactOutlinedButton(
             text = "Theirs",
@@ -305,12 +354,12 @@ private fun MergeHeader(state: MergeState, onJump: (Int) -> Unit) {
             text = "Both",
             onClick = { state.editCurrent(state.bothOf(state.current)) },
         )
+        Box(modifier = Modifier.weight(1f))
         CompactFilledButton(
             text = "Save & resolve",
             onClick = { state.save() },
             enabled = !state.busy,
         )
-    }
 }
 
 /** Theirs and Mine, in the order TortoiseGit puts them, sharing one scroll position. */
@@ -320,15 +369,36 @@ private fun Sides(
     rows: List<MergeRow>,
     list: LazyListState,
     wide: Boolean,
+    showMine: Boolean,
+    onShowMine: (Boolean) -> Unit,
     horizontal: ScrollState,
     modifier: Modifier = Modifier,
 ) {
     val theirs = JCodeTheme.semanticColors.warning
     val mine = MaterialTheme.colorScheme.primary
     Column(modifier = modifier.fillMaxWidth()) {
-        Row(modifier = Modifier.fillMaxWidth()) {
-            PaneTitle("Theirs (incoming)", theirs, Modifier.weight(1f))
-            if (wide) PaneTitle("Mine (current)", mine, Modifier.weight(1f))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (wide) {
+                PaneTitle("Theirs (incoming)", theirs, Modifier.weight(1f))
+                PaneTitle("Mine (current)", mine, Modifier.weight(1f))
+            } else {
+                PaneTitle(
+                    if (showMine) "Mine (current)" else "Theirs (incoming)",
+                    if (showMine) mine else theirs,
+                    Modifier.weight(1f),
+                )
+                Box(modifier = Modifier.padding(end = Space.sm)) {
+                    ToggleChip(
+                        label = if (showMine) "Show theirs" else "Show mine",
+                        on = false,
+                    ) { onShowMine(!showMine) }
+                }
+            }
         }
         // One list holding both columns, so they cannot drift apart: two lists sharing a position is
         // two lists agreeing to, and one row spanning both simply is aligned.
@@ -336,12 +406,16 @@ private fun Sides(
             items(rows.size) { i ->
                 val row = rows[i]
                 Row(modifier = Modifier.fillMaxWidth().height(RowHeight)) {
-                    SideCell(state, row, row.theirs, row.theirsNo, theirs, horizontal, Modifier.weight(1f))
+                    if (wide || !showMine) {
+                        SideCell(state, row, row.theirs, row.theirsNo, theirs, horizontal, Modifier.weight(1f))
+                    }
                     if (wide) {
                         VerticalDivider(
                             thickness = StrokeWidth.hairline,
                             color = MaterialTheme.colorScheme.outlineVariant,
                         )
+                    }
+                    if (wide || showMine) {
                         SideCell(state, row, row.mine, row.mineNo, mine, horizontal, Modifier.weight(1f))
                     }
                 }

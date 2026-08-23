@@ -137,9 +137,6 @@ internal class MergeState(
     var current by mutableStateOf(0)
         private set
 
-    /** Side by side needs width; below that the three panes stack. */
-    var split by mutableStateOf(true)
-
     /** How many conflicts there are, which is what "3 of 7" counts. */
     val conflictCount: Int get() = segments.count { it.conflict }
 
