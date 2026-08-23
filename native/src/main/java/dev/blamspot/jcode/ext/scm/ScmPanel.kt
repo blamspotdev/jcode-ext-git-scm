@@ -974,7 +974,7 @@ private fun PopoverItem(
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onClick)
             .handCursor()
-            .padding(horizontal = Space.sm, vertical = Space.xs),
+            .padding(horizontal = Space.sm, vertical = Space.sm),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Space.sm),
     ) {
