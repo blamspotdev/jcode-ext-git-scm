@@ -438,6 +438,22 @@ internal class ManageState(
         )
     }
 
+    /**
+     * Open a commit as its own page.
+     *
+     * A commit's files want the full width and their own scroll, which a card in a list of cards
+     * cannot give them — the commit that scaffolds this repository lists every file in it. The
+     * repository travels in the id because the page opens standalone and cannot see this one's idea
+     * of which repository is active.
+     */
+    fun openCommit(commit: Commit) {
+        val root = repo ?: return
+        host.openView(
+            "commit:" + encodeUri(root) + ":" + encodeUri(commit.hash),
+            title = commit.hash + " " + commit.subject,
+        )
+    }
+
     /** The branch part of `origin/feature`, which is what you check out locally. */
     fun localNameOf(remoteBranch: String): String = remoteBranch.substringAfter('/', remoteBranch)
 }

@@ -1,18 +1,14 @@
 package dev.blamspot.jcode.ext.scm
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -28,7 +24,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,12 +34,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.blamspot.jcode.design.CompactOutlinedButton
@@ -238,12 +229,14 @@ private fun DiffBody(state: DiffState) {
                 when (val item = state.items[i]) {
                     is DiffItem.Unchanged -> UnchangedRow(item.gap, state.expanded) { state.expandContext() }
                     is DiffItem.HunkStart -> HunkHeaderRow(state, item)
-                    is DiffItem.Row ->
+                    is DiffItem.Row -> {
+                        val onOpen: ((Int) -> Unit)? = if (state.openable) state::openAt else null
                         if (state.layout == DiffLayout.Split) {
-                            SplitRow(state, item.row, horizontal)
+                            SplitRow(item.row, state.wrap, horizontal, onOpen)
                         } else {
-                            InlineRows(state, item.row, horizontal)
+                            InlineRows(item.row, state.wrap, horizontal, onOpen)
                         }
+                    }
                 }
             }
             item { Box(modifier = Modifier.size(Space.xxl)) }
@@ -343,114 +336,6 @@ private fun HunkHeaderRow(state: DiffState, item: DiffItem.HunkStart) {
     }
 }
 
-// --- rows ----------------------------------------------------------------------------------------
-
-@Composable
-private fun SplitRow(state: DiffState, row: AlignedRow, horizontal: ScrollState) {
-    Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
-        CodeCell(state, row.left, horizontal, old = true, modifier = Modifier.weight(1f).fillMaxHeight())
-        VerticalDivider(
-            thickness = StrokeWidth.hairline,
-            color = MaterialTheme.colorScheme.outlineVariant,
-        )
-        CodeCell(state, row.right, horizontal, old = false, modifier = Modifier.weight(1f).fillMaxHeight())
-    }
-}
-
-/**
- * The same row with one column instead of two.
- *
- * A replacement becomes the two lines it always was in a unified diff — removed above added — which
- * is what a narrow screen has room for and what a reader of `git diff` already expects.
- */
-@Composable
-private fun InlineRows(state: DiffState, row: AlignedRow, horizontal: ScrollState) {
-    val left = row.left
-    val right = row.right
-    if (left != null && right != null && left.kind == DiffLineKind.Context) {
-        CodeCell(state, right, horizontal, old = false, modifier = Modifier.fillMaxWidth())
-        return
-    }
-    left?.let { CodeCell(state, it, horizontal, old = true, modifier = Modifier.fillMaxWidth()) }
-    right?.let { CodeCell(state, it, horizontal, old = false, modifier = Modifier.fillMaxWidth()) }
-}
-
-/**
- * One line of one version.
- *
- * A null cell is a blank across from a line the other side does not have — drawn, not skipped, so
- * the two columns stay in step.
- */
-@Composable
-private fun CodeCell(
-    state: DiffState,
-    cell: Cell?,
-    horizontal: ScrollState,
-    old: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    val colors = MaterialTheme.colorScheme
-    val success = JCodeTheme.semanticColors.success
-    val background = when (cell?.kind) {
-        DiffLineKind.Add -> success.copy(alpha = 0.12f)
-        DiffLineKind.Delete -> colors.error.copy(alpha = 0.12f)
-        null -> colors.surfaceVariant.copy(alpha = 0.18f)
-        else -> Color.Transparent
-    }
-    val tappable = state.openable && !old && cell != null && cell.number > 0
-    Row(
-        modifier = modifier
-            .background(background)
-            .then(if (tappable) Modifier.clickable { state.openAt(cell.number) }.handCursor() else Modifier),
-        verticalAlignment = Alignment.Top,
-    ) {
-        Text(
-            text = cell?.number?.takeIf { it > 0 }?.toString().orEmpty(),
-            style = MaterialTheme.typography.labelSmall,
-            fontFamily = FontFamily.Monospace,
-            color = colors.onSurfaceVariant.copy(alpha = 0.55f),
-            textAlign = TextAlign.End,
-            maxLines = 1,
-            modifier = Modifier.width(GutterWidth).padding(end = Space.xs),
-        )
-        Text(
-            text = highlighted(cell, success, colors.error),
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
-            color = when (cell?.kind) {
-                DiffLineKind.Add -> success
-                DiffLineKind.Delete -> colors.error
-                else -> colors.onSurface
-            },
-            maxLines = if (state.wrap) Int.MAX_VALUE else 1,
-            softWrap = state.wrap,
-            modifier = Modifier
-                .weight(1f)
-                .then(if (state.wrap) Modifier else Modifier.horizontalScroll(horizontal))
-                .padding(end = Space.sm),
-        )
-    }
-}
-
-/**
- * The line, with the part that actually changed picked out.
- *
- * Without this a replaced line is two solid blocks of colour and the reader has to spot the
- * difference themselves — which, on a line of code, is the whole of the work.
- */
-private fun highlighted(cell: Cell?, success: Color, error: Color): AnnotatedString {
-    val text = cell?.text?.ifEmpty { " " } ?: " "
-    val span = cell?.changed ?: return AnnotatedString(text)
-    val start = span.first.coerceIn(0, text.length)
-    val end = (span.last + 1).coerceIn(start, text.length)
-    if (start >= end) return AnnotatedString(text)
-    val tint = if (cell.kind == DiffLineKind.Add) success else error
-    return buildAnnotatedString {
-        append(text)
-        addStyle(SpanStyle(background = tint.copy(alpha = 0.30f)), start, end)
-    }
-}
-
 // --- stash ---------------------------------------------------------------------------------------
 
 @Composable
@@ -488,30 +373,6 @@ private fun StashFileList(state: DiffState) {
     }
 }
 
-@Composable
-private fun StatusLetter(code: String) {
-    val tint = when (code) {
-        "A" -> JCodeTheme.semanticColors.success
-        "D" -> MaterialTheme.colorScheme.error
-        "R", "C" -> MaterialTheme.colorScheme.primary
-        else -> JCodeTheme.semanticColors.warning
-    }
-    Surface(
-        shape = RoundedCornerShape(Radius.xs),
-        color = tint.copy(alpha = 0.16f),
-        modifier = Modifier.size(IconSize.sm),
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Text(
-                text = code,
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                color = tint,
-            )
-        }
-    }
-}
 
 /** A small action, sized for a toolbar rather than for a form. */
 @Composable
@@ -560,8 +421,6 @@ private fun ActionChip(
     }
 }
 
-/** Room for four digits, which covers the files anyone reads a diff of on a phone. */
-private val GutterWidth = 44.dp
 
 /** Below this a split view is two columns of ellipsis rather than a comparison. */
 private val SplitMinWidth = 640.dp

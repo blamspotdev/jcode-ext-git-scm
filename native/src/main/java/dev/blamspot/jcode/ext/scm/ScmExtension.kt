@@ -53,6 +53,12 @@ class ScmExtension : JCodeNativeExtension {
                 ClonePage(clone)
             }
 
+            view.startsWith("commit:") -> {
+                val commit = remember(host, scope, view) { CommitState(host, scope, view) }
+                LaunchedEffect(commit) { commit.boot() }
+                CommitPage(commit)
+            }
+
             view.startsWith("merge:") -> {
                 val merge = remember(host, scope, view) { MergeState(host, scope, view) }
                 LaunchedEffect(merge) { merge.boot() }

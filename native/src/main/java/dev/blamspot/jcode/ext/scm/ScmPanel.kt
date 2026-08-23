@@ -457,17 +457,17 @@ private fun LazyListScope.section(state: ScmState, files: List<FileEntry>, secti
         items(files) { FileRow(state, it, section, depth = 0) }
         return
     }
-    val rows = buildTreeRows(files, state.collapsedFolders.toSet())
+    val rows = buildTreeRows(files, state.collapsedFolders.toSet()) { it.path }
     items(rows) { row ->
         when (row) {
             is TreeRow.Folder -> FolderRow(state, row)
-            is TreeRow.File -> FileRow(state, row.entry, section, row.depth)
+            is TreeRow.File -> FileRow(state, row.item, section, row.depth)
         }
     }
 }
 
 @Composable
-private fun FolderRow(state: ScmState, row: TreeRow.Folder) {
+private fun FolderRow(state: ScmState, row: TreeRow.Folder<*>) {
     Row(
         modifier = Modifier
             .fillMaxWidth()

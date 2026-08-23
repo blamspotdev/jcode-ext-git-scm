@@ -1,5 +1,6 @@
 package dev.blamspot.jcode.ext.scm
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +36,7 @@ import dev.blamspot.jcode.design.JCodeIcon
 import dev.blamspot.jcode.design.JCodeTheme
 import dev.blamspot.jcode.design.Radius
 import dev.blamspot.jcode.design.Space
+import dev.blamspot.jcode.design.handCursor
 import dev.blamspot.jcode.design.jcIcon
 import kotlinx.coroutines.launch
 
@@ -339,7 +341,7 @@ private fun CommitsCard(state: ManageState) {
                 GroupHeader(group, rows.size)
                 rows.forEachIndexed { i, c ->
                     if (i > 0) RowDivider()
-                    CommitRow(c)
+                    CommitRow(c) { state.openCommit(c) }
                 }
             }
         }
@@ -400,8 +402,14 @@ private fun GroupHeader(group: CommitGroup, count: Int) {
 private const val HistoryItem = 2
 
 @Composable
-private fun CommitRow(commit: Commit) {
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = Space.xs)) {
+private fun CommitRow(commit: Commit, onOpen: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpen)
+            .handCursor()
+            .padding(vertical = Space.xs),
+    ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Space.sm),
