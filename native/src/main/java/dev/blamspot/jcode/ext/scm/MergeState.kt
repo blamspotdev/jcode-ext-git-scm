@@ -66,6 +66,25 @@ internal fun parseConflicts(raw: String): List<MergeSegment> {
 }
 
 /**
+ * One line of the file, in all three versions at once.
+ *
+ * Null means the version has no line here — one side said three lines where the other said one, so
+ * the shorter gets a blank to keep the three columns level. That filler is what makes reading across
+ * a row mean anything, and it is why the panes can share a scroll position.
+ *
+ * [conflict] is the index of the conflict the line belongs to, or -1 for a line all three agree on.
+ */
+internal data class MergeRow(
+    val theirs: String?,
+    val mine: String?,
+    val merged: String?,
+    val theirsNo: Int,
+    val mineNo: Int,
+    val mergedNo: Int,
+    val conflict: Int,
+)
+
+/**
  * A conflicted file, and what the user has decided about each conflict.
  *
  * The decisions live beside the segments rather than in the text: the file is only rewritten on
@@ -164,15 +183,79 @@ internal class MergeState(
             ?.takeIf { top.ok && it.isNotEmpty() && it != "/" }
     }
 
+    /** Bumped on every edit, so the three panes are rebuilt only when the result actually changed. */
+    var revision by mutableStateOf(0)
+        private set
+
     fun choose(index: Int, text: String) {
-        if (index in resolutions.indices) resolutions[index] = text
+        if (index !in resolutions.indices) return
+        resolutions[index] = text
+        revision++
     }
 
+    /** The resolution text of conflict number [n], for the field that edits it. */
+    fun resolutionOf(n: Int): String = resolutions.getOrElse(segmentOf(n)) { "" }
+
+    fun editCurrent(text: String) = choose(segmentOf(current), text)
+
+    /**
+     * The whole file, three versions side by side.
+     *
+     * Built rather than shown as hunks because that is the thing TortoiseGitMerge gets right: a
+     * conflict is easiest to judge in the middle of the file it is in, not extracted from it. Lines
+     * both sides agree on appear in all three columns; a conflict contributes as many rows as its
+     * longest side, and the shorter sides get blanks.
+     */
+    fun buildRows(): List<MergeRow> {
+        val out = ArrayList<MergeRow>()
+        var t = 0
+        var m = 0
+        var g = 0
+        var conflictIndex = -1
+        segments.forEachIndexed { i, segment ->
+            if (!segment.conflict) {
+                segment.text.forEach { line ->
+                    out += MergeRow(line, line, line, ++t, ++m, ++g, -1)
+                }
+                return@forEachIndexed
+            }
+            conflictIndex++
+            val theirs = segment.theirs
+            val mine = segment.ours
+            val merged = resolutions.getOrElse(i) { "" }
+                .let { if (it.isEmpty()) emptyList() else it.split('\n') }
+            val height = maxOf(theirs.size, mine.size, merged.size)
+            for (k in 0 until height) {
+                val a = theirs.getOrNull(k)
+                val b = mine.getOrNull(k)
+                val c = merged.getOrNull(k)
+                out += MergeRow(
+                    theirs = a,
+                    mine = b,
+                    merged = c,
+                    theirsNo = if (a != null) ++t else 0,
+                    mineNo = if (b != null) ++m else 0,
+                    mergedNo = if (c != null) ++g else 0,
+                    conflict = conflictIndex,
+                )
+            }
+        }
+        return out
+    }
+
+    /** Conflict [n]'s incoming text. */
+    fun theirsOf(n: Int): String =
+        segments.getOrNull(segmentOf(n))?.theirs?.joinToString("\n").orEmpty()
+
+    /** Conflict [n]'s current text. */
+    fun mineOf(n: Int): String =
+        segments.getOrNull(segmentOf(n))?.ours?.joinToString("\n").orEmpty()
+
     /** Both sides, in the order git wrote them, with a newline between when both have content. */
-    fun both(segment: MergeSegment): String {
-        val ours = segment.ours.joinToString("\n")
-        val theirs = segment.theirs.joinToString("\n")
-        return ours + (if (ours.isNotEmpty() && theirs.isNotEmpty()) "\n" else "") + theirs
+    fun bothOf(n: Int): String {
+        val mine = mineOf(n)
+        val theirs = theirsOf(n)
+        return mine + (if (mine.isNotEmpty() && theirs.isNotEmpty()) "\n" else "") + theirs
     }
 
     /**
