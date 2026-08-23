@@ -455,17 +455,22 @@ private fun SideCell(
             },
         )
     }
+    val current = row.conflict >= 0 && row.conflict == state.current
     LineCell(
         text = text,
         number = number,
         conflict = row.conflict,
         mark = state.markForSide(row, text),
         accent = accent,
-        current = row.conflict >= 0 && row.conflict == state.current,
+        current = current,
         horizontal = horizontal,
         modifier = modifier,
         onClick = { if (row.conflict >= 0) state.goTo(row.conflict) },
         actions = actions,
+        // Tapping a line of the conflict already being worked on used to do nothing — it navigated
+        // to where it already was. It opens the line's own menu instead, which is otherwise reachable
+        // only by long-pressing and so, in practice, not reachable at all.
+        menuOnClick = current,
     )
 }
 
@@ -623,6 +628,7 @@ private fun LineCell(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
     actions: List<ContextAction>,
+    menuOnClick: Boolean = false,
 ) {
     val colors = MaterialTheme.colorScheme
     var menu by remember { mutableStateOf(false) }
@@ -644,7 +650,9 @@ private fun LineCell(
                 .fillMaxSize()
                 .background(background)
                 .combinedClickable(
-                    onClick = onClick,
+                    onClick = {
+                        if (menuOnClick && actions.isNotEmpty()) menu = true else onClick()
+                    },
                     onLongClick = { if (actions.isNotEmpty()) menu = true },
                 )
                 .handCursor(),
