@@ -141,8 +141,9 @@ internal class DiffState(
     /** Staging and reverting are only unambiguous against the index; elsewhere they are hidden. */
     val canAct: Boolean get() = actionable && compare == Compare.WorkingVsIndex && !busy
 
+    /** Under the title: for a stash, which entry it is; for a file, what it is being compared with. */
     val subtitle: String
-        get() = if (stashRef != null) "Stashed changes" else compare.label
+        get() = stashRef?.let { "Stashed changes · $it" } ?: compare.label
 
     fun boot() {
         scope.launch {
@@ -286,6 +287,11 @@ internal class DiffState(
         openable = false
         actionable = false
         val quoted = Git.quote(ref)
+        // A stash is a commit, so its subject is the name it was saved under — which is the thing
+        // the user chose and can recognise. "stash@{0}" is a position in a list, useful for saying
+        // which one but useless for saying which; it moves to the subtitle rather than leading.
+        val subject = git.run(root, "log -1 --format=%s $quoted", timeoutMs = 20_000L)
+        if (subject.ok) title = subject.stdout.trim().ifBlank { ref }
         // --include-untracked arrived in git 2.32; an older git rejects the flag rather than the
         // request, so the same command without it is the fallback, not a different answer.
         var names = git.run(root, "stash show --name-status --include-untracked $quoted")
