@@ -23,6 +23,10 @@ import dev.blamspot.jcode.design.Space
  *
  * [input] turns the prompt into a small form: non-null shows a field seeded with that value, and
  * [onConfirm] receives what it holds. Without it the field is absent and [onConfirm] gets "".
+ *
+ * Whether that field is required follows [destructive], and both call sites depend on it: a rename
+ * has nothing to do without a name, so its button waits for one; a stash message only improves a
+ * name git would otherwise invent, so a blank one still goes through.
  */
 internal data class Confirm(
     val title: String,

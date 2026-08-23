@@ -573,17 +573,29 @@ internal class ScmState(
 
     // --- stash ---------------------------------------------------------------------------------
 
+    /**
+     * Stash everything, under a name you can read later.
+     *
+     * The prompt asks for the message rather than taking one: git's own default names a stash after
+     * the commit it sat on ("WIP on master: a66eaa8 …"), which says when it was made and nothing
+     * about what is in it — and a list of those is unreadable the moment there are two.
+     *
+     * It is seeded from the commit box because a message describing the work being put aside is
+     * usually already typed there, and left blank falls back to git's default rather than refusing.
+     * The commit box itself is not cleared: popping the stash brings the changes back, and the
+     * message that described them is then waiting where it was.
+     */
     fun stashPush() {
         confirm = Confirm(
             title = "Stash changes",
             body = "Save all working-tree changes — staged, unstaged and untracked — to a new stash.",
             action = "Stash",
-        ) {
-            val message = commitMessage.trim()
+            input = commitMessage.trim(),
+            placeholder = "Message (optional)",
+        ) { message ->
             mutate(
                 "stash push --include-untracked" + if (message.isNotEmpty()) " -m " + Git.quote(message) else "",
             ) { r ->
-                if (r.ok) commitMessage = ""
                 // Only claim it worked when it worked: mutate reports the failure itself.
                 if (r.ok) log = r.output.trim().ifBlank { "Changes stashed." }
                 refreshStashes()
