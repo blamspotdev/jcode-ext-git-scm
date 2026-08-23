@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -29,6 +31,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -42,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
@@ -572,48 +576,147 @@ private fun CommitBox(state: ScmState) {
                 }
             },
         )
-        // Commit takes the full width and its variants hide behind the caret: committing is what
-        // this box is for, and the other three are the same act with a follow-on.
         var menu by remember { mutableStateOf(false) }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(Space.xxs),
-            verticalAlignment = Alignment.CenterVertically,
+        SplitButton(
+            label = "Commit",
+            onClick = { state.commitVariant(CommitVariant.Plain) },
+            enabled = state.canCommit,
+            busy = state.busy,
+            menuEnabled = !state.busy,
+            menuOpen = menu,
+            onMenuOpen = { menu = true },
+            onMenuDismiss = { menu = false },
         ) {
-            CompactFilledButton(
-                text = "Commit",
-                onClick = { state.commitVariant(CommitVariant.Plain) },
-                enabled = state.canCommit,
-                busy = state.busy,
-                modifier = Modifier.weight(1f),
-            )
-            PopoverAnchor(
-                expanded = menu,
-                onDismiss = { menu = false },
-                alignEnd = true,
-                anchor = {
-                    CompactFilledButton(
-                        text = "⌄",
-                        onClick = { menu = true },
-                        enabled = !state.busy,
-                    )
-                },
-            ) {
-                PopoverItem("Commit", jcIcon(JCodeIcon.Save), enabled = state.canCommit) {
-                    menu = false; state.commitVariant(CommitVariant.Plain)
-                }
-                // Amend is the one that works without a message: it reuses the last commit's.
-                PopoverItem("Commit (Amend)", jcIcon(JCodeIcon.Undo), enabled = !state.busy) {
-                    menu = false; state.commitVariant(CommitVariant.Amend)
-                }
-                PopoverItem("Commit & Push", ScmIcons.Push, enabled = state.canCommit) {
-                    menu = false; state.commitVariant(CommitVariant.Push)
-                }
-                PopoverItem("Commit & Sync", ScmIcons.Fetch, enabled = state.canCommit) {
-                    menu = false; state.commitVariant(CommitVariant.Sync)
-                }
+            PopoverItem("Commit", jcIcon(JCodeIcon.Save), enabled = state.canCommit) {
+                menu = false; state.commitVariant(CommitVariant.Plain)
+            }
+            // Amend is the one that works without a message: it reuses the last commit's.
+            PopoverItem("Commit (Amend)", jcIcon(JCodeIcon.Undo), enabled = !state.busy) {
+                menu = false; state.commitVariant(CommitVariant.Amend)
+            }
+            PopoverItem("Commit & Push", ScmIcons.Push, enabled = state.canCommit) {
+                menu = false; state.commitVariant(CommitVariant.Push)
+            }
+            PopoverItem("Commit & Sync", ScmIcons.Fetch, enabled = state.canCommit) {
+                menu = false; state.commitVariant(CommitVariant.Sync)
             }
         }
         if (state.needsIdentity) IdentityForm(state)
+    }
+}
+
+/**
+ * Commit, and the other three ways to commit.
+ *
+ * One control, not two. A separate pill holding a "⌄" glyph read as a second button that happened to
+ * be next to the first, and set that glyph as a *label* — sitting where a word would, at a word's
+ * size, in a pill wide enough for one. Joined along a hairline, the caret is plainly the menu
+ * belonging to the button beside it, and it takes a quarter of the width doing so.
+ *
+ * The halves are enabled separately, which is the reason a split button exists here at all: Commit
+ * needs a message and something staged, while Amend — behind the caret — needs neither.
+ */
+@Composable
+private fun SplitButton(
+    label: String,
+    onClick: () -> Unit,
+    enabled: Boolean,
+    busy: Boolean,
+    menuEnabled: Boolean,
+    menuOpen: Boolean,
+    onMenuOpen: () -> Unit,
+    onMenuDismiss: () -> Unit,
+    menu: @Composable ColumnScope.() -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().height(ControlSize.compactHeight),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SplitHalf(
+            enabled = enabled && !busy,
+            shape = RoundedCornerShape(
+                topStart = Radius.pill,
+                bottomStart = Radius.pill,
+                topEnd = Radius.none,
+                bottomEnd = Radius.none,
+            ),
+            onClick = onClick,
+            modifier = Modifier.weight(1f),
+        ) {
+            if (busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(IconSize.xs),
+                    strokeWidth = StrokeWidth.thick,
+                    color = LocalContentColor.current,
+                )
+            } else {
+                Text(label, style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        // Hairline rather than a gap: a gap would make them two controls again.
+        Box(
+            modifier = Modifier
+                .width(StrokeWidth.hairline)
+                .fillMaxHeight()
+                .background(MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.2f)),
+        )
+        PopoverAnchor(
+            expanded = menuOpen,
+            onDismiss = onMenuDismiss,
+            alignEnd = true,
+            anchor = {
+                SplitHalf(
+                    enabled = menuEnabled,
+                    shape = RoundedCornerShape(
+                        topStart = Radius.none,
+                        bottomStart = Radius.none,
+                        topEnd = Radius.pill,
+                        bottomEnd = Radius.pill,
+                    ),
+                    onClick = onMenuOpen,
+                    modifier = Modifier.width(SplitCaretWidth).fillMaxHeight(),
+                ) {
+                    Icon(
+                        imageVector = jcIcon(JCodeIcon.ChevronDown),
+                        contentDescription = "More commit actions",
+                        modifier = Modifier.size(IconSize.sm),
+                    )
+                }
+            },
+            content = menu,
+        )
+    }
+}
+
+/** Wide enough for a chevron and a thumb, narrow enough to stay the smaller half. */
+private val SplitCaretWidth = 40.dp
+
+/**
+ * One half of a [SplitButton], wearing the filled-tonal colours the app's compact buttons use.
+ *
+ * Written out rather than borrowed from `CompactFilledButton`, which owns its own shape: the whole
+ * point here is that the two halves round only on their outer edges.
+ */
+@Composable
+private fun SplitHalf(
+    enabled: Boolean,
+    shape: Shape,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        shape = shape,
+        color = if (enabled) colors.secondaryContainer else colors.onSurface.copy(alpha = 0.12f),
+        contentColor = if (enabled) colors.onSecondaryContainer else colors.onSurface.copy(alpha = 0.38f),
+        modifier = modifier
+            .fillMaxHeight()
+            .clip(shape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .handCursor(),
+    ) {
+        Box(contentAlignment = Alignment.Center) { content() }
     }
 }
 
