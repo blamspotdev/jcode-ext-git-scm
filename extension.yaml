@@ -28,9 +28,12 @@ settings:
     description: Agent CLI the Generate button runs to draft a commit message from the diff. "custom" runs the command below.
   - key: scm.commitMsg.model
     label: Generate commit message · model
-    type: string
+    type: autocomplete
     default: ""
-    description: Model id passed to the agent (blank = the tool's own default).
+    suggestCommand: sh {{extensionDir}}/scripts/list-models.sh {{scm.commitMsg.tool}}
+    description: >-
+      Model id passed to the agent (blank = the tool's own default). The list is read from the
+      selected tool when this field appears; anything else you type is used as-is.
   - key: scm.commitMsg.detail
     label: Generate commit message · detail
     type: enum
