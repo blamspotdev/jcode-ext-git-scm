@@ -369,21 +369,3 @@ private fun CommitRow(commit: Commit) {
         )
     }
 }
-
-@Composable
-private fun Note(text: String, spinner: Boolean = false) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(Space.lg),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Space.sm),
-    ) {
-        if (spinner) {
-            CircularProgressIndicator(modifier = Modifier.size(IconSize.sm), strokeWidth = StrokeWidth.thick)
-        }
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}

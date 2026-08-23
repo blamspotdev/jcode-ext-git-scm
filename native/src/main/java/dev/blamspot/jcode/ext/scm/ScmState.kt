@@ -676,24 +676,6 @@ private fun cleanDraft(raw: String): String =
         .joinToString("\n")
         .trim()
 
-/**
- * Percent-encode one segment of a view id, the way `encodeURIComponent` does.
- *
- * The pages that read these ids are the web build's and decode them in JavaScript, so the encoding
- * has to be JavaScript's — `URLEncoder` would write a space as `+` and the path would not survive.
- */
-private fun encodeUri(value: String): String = buildString {
-    for (b in value.toByteArray(Charsets.UTF_8)) {
-        val c = b.toInt().toChar()
-        if (c.isLetterOrDigit() && b.toInt() in 0..127 || c in "-_.!~*'()") {
-            append(c)
-        } else {
-            append('%').append("0123456789ABCDEF"[(b.toInt() shr 4) and 0xF])
-                .append("0123456789ABCDEF"[b.toInt() and 0xF])
-        }
-    }
-}
-
 private fun <T> androidx.compose.runtime.snapshots.SnapshotStateList<T>.replaceWith(items: List<T>) {
     clear()
     addAll(items)

@@ -40,14 +40,20 @@ class ScmExtension : JCodeNativeExtension {
             onDispose { handle.close() }
         }
 
-        when (params[JCodeNativeExtension.Params.VIEW]) {
-            "manage" -> {
+        val view = params[JCodeNativeExtension.Params.VIEW].orEmpty()
+        when {
+            view == "manage" -> {
                 val manage = remember(host, scope) { ManageState(host, scope) }
                 LaunchedEffect(manage) { manage.boot() }
                 ManagePage(manage)
             }
-            // The drawer, and every route not yet drawn natively: sign-in, clone, diff, merge and
-            // stash are still the web build's pages. A route this plugin cannot draw must fall
+            view.startsWith("diff:") || view.startsWith("stash:") -> {
+                val diff = remember(host, scope, view) { DiffState(host, scope, view) }
+                LaunchedEffect(diff) { diff.boot() }
+                DiffPage(diff)
+            }
+            // The drawer, and every route not yet drawn natively: sign-in, clone, merge and remote
+            // repo are still the web build's pages. A route this plugin cannot draw must fall
             // through to the panel rather than render nothing.
             else -> ScmPanel(state)
         }
