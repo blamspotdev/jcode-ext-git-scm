@@ -103,6 +103,15 @@ internal class ScmState(
     var generating by mutableStateOf(false)
         private set
 
+    /**
+     * True only while a fetch is in flight, which is what the pull-to-refresh indicator follows.
+     *
+     * Deliberately not [busy]. Every stage and unstage sets that, and driving the indicator from it
+     * would drop a spinner over the list for the fifth of a second each of those takes.
+     */
+    var refreshing by mutableStateOf(false)
+        private set
+
     /** What the panel is asking about before it does something irreversible. */
     data class Confirm(val title: String, val body: String, val action: String, val onConfirm: () -> Unit)
 
@@ -342,9 +351,16 @@ internal class ScmState(
      * status on its way back, so between them this button leaves nothing on screen stale except
      * which repositories exist, and that only changes when the workspace does.
      */
-    fun fetch() = mutate("fetch --all --prune", timeoutMs = 180_000L) { r ->
-        if (r.ok) log = r.output.trim().ifBlank { null }
-        refreshStashes()
+    fun fetch() {
+        // Checked here as well as in mutate: a refusal there would leave the indicator spinning over
+        // a fetch that never started.
+        if (repo == null || busy) return
+        refreshing = true
+        mutate("fetch --all --prune", timeoutMs = 180_000L) { r ->
+            if (r.ok) log = r.output.trim().ifBlank { null }
+            refreshStashes()
+            refreshing = false
+        }
     }
 
     /**

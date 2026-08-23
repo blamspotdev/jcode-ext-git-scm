@@ -24,6 +24,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -31,6 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -239,11 +241,7 @@ private fun Toolbar(state: ScmState) {
             if (state.viewMode == ViewMode.Tree) ScmIcons.List else ScmIcons.Tree,
             if (state.viewMode == ViewMode.Tree) "Show as list" else "Show as tree",
         ) { state.toggleViewMode() }
-        // Fetch where the panel's reload used to be, and there is no reload beside it: fetching
-        // re-reads the working tree on its way back, so with a repository open the two buttons would
-        // have been one button and a slower version of itself.
-        if (state.busy) BusySpinner() else HeaderIcon(ScmIcons.Fetch, "Fetch") { state.fetch() }
-        // Sign-in and the history page behind one button: a drawer this narrow cannot hold six tap
+        // Sign-in and the history page behind one button: a drawer this narrow cannot hold five tap
         // targets in a row without the branch name losing to them.
         var overflow by remember { mutableStateOf(false) }
         PopoverAnchor(
@@ -376,11 +374,19 @@ private fun HeaderIcon(icon: ImageVector, label: String, onClick: () -> Unit) {
  * fixed share of a drawer that in landscape is only a few hundred pixels tall — and when the commit
  * failed for want of a git identity, the two fields and their Save button grew past the bottom edge
  * with nothing to scroll.
+ *
+ * Pulling the list down fetches. That is where the gesture already points — you reach for it to ask
+ * "is this still true?" — and it buys back a tap target from a header row that had five of them
+ * competing with the branch name.
  */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun RepoBody(state: ScmState) {
-    Column(modifier = Modifier.fillMaxSize()) {
+    PullToRefreshBox(
+        isRefreshing = state.refreshing,
+        onRefresh = { state.fetch() },
+        modifier = Modifier.fillMaxSize(),
+    ) {
         LazyColumn(modifier = Modifier.fillMaxSize().padding(horizontal = Space.sm)) {
             item {
                 Column {
