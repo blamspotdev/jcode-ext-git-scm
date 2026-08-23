@@ -90,7 +90,10 @@ internal fun PageHeader(
 internal fun Card(
     title: String,
     modifier: Modifier = Modifier,
+    /** Sits beside the title — a switch over what the card is showing. */
     trailing: (@Composable () -> Unit)? = null,
+    /** Sits at the far end — something the card does. */
+    action: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(
@@ -104,14 +107,21 @@ internal fun Card(
             verticalArrangement = Arrangement.spacedBy(Space.sm),
         ) {
             if (title.isNotEmpty()) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Space.md),
+                ) {
                     Text(
                         text = title,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.weight(1f),
                     )
+                    // Beside the title rather than across the card from it: a switch that changes
+                    // what the title names belongs next to the title, not at the far edge where it
+                    // reads as an unrelated control that happens to share the row.
                     trailing?.invoke()
+                    Box(modifier = Modifier.weight(1f))
+                    action?.invoke()
                 }
             }
             content()

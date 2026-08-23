@@ -8,9 +8,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -25,7 +27,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import dev.blamspot.jcode.design.CompactFilledButton
+import dev.blamspot.jcode.design.IconSize
 import dev.blamspot.jcode.design.JCodeIcon
 import dev.blamspot.jcode.design.JCodeTheme
 import dev.blamspot.jcode.design.Radius
@@ -88,25 +90,14 @@ private fun BranchesCard(state: ManageState) {
                 onSelect = { state.tab = it },
             )
         },
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Space.sm),
-        ) {
-            Box(modifier = Modifier.weight(1f)) {
-                CompactField(
-                    value = state.newBranch,
-                    onValueChange = { state.newBranch = it },
-                    placeholder = "new-branch-name",
-                )
-            }
-            CompactFilledButton(
-                text = "Create",
-                onClick = { state.create() },
+        action = {
+            IconAction(
+                icon = jcIcon(JCodeIcon.Add),
+                label = "New branch",
                 enabled = !state.busy,
-                busy = state.busy,
-            )
-        }
+            ) { state.promptCreate() }
+        },
+    ) {
         state.message?.let { text ->
             Text(
                 text = text,
@@ -132,9 +123,9 @@ private fun BranchesCard(state: ManageState) {
                 if (i > 0) RowDivider()
                 LocalBranchRow(state, b)
             }
-            else -> state.remote.forEachIndexed { i, name ->
+            else -> state.remote.forEachIndexed { i, b ->
                 if (i > 0) RowDivider()
-                RemoteBranchRow(state, name)
+                RemoteBranchRow(state, b)
             }
         }
     }
@@ -146,6 +137,8 @@ private fun LocalBranchRow(state: ManageState, branch: LocalBranch) {
         name = branch.name,
         current = branch.current,
         upstream = branch.upstream,
+        incoming = branch.incoming,
+        outgoing = branch.outgoing,
     ) {
         // Ordered by consequence: switching to it, then bringing it up to date, then sending it,
         // then renaming, and deleting last where a mis-tap is least likely to land.
@@ -188,9 +181,16 @@ private fun LocalBranchRow(state: ManageState, branch: LocalBranch) {
  * and not undoable from here; renaming and pushing belong to the local branch that tracks it.
  */
 @Composable
-private fun RemoteBranchRow(state: ManageState, name: String) {
+private fun RemoteBranchRow(state: ManageState, branch: RemoteBranch) {
+    val name = branch.name
     val short = state.localNameOf(name)
-    BranchRow(name = name, current = short == state.branch, upstream = "") {
+    BranchRow(
+        name = name,
+        current = short == state.branch,
+        upstream = "",
+        incoming = branch.incoming,
+        outgoing = branch.outgoing,
+    ) {
         BranchMenu(state) { dismiss ->
             PopoverItem("Checkout", ScmIcons.Branch, enabled = !state.busy) {
                 dismiss(); state.checkout(short)
@@ -227,6 +227,8 @@ private fun BranchRow(
     name: String,
     current: Boolean,
     upstream: String,
+    incoming: Int,
+    outgoing: Int,
     actions: @Composable () -> Unit,
 ) {
     Row(
@@ -266,6 +268,8 @@ private fun BranchRow(
                 )
             }
         }
+        Drift(ScmIcons.Pull, incoming)
+        Drift(ScmIcons.Push, outgoing)
         Box(modifier = Modifier.weight(1f))
         Row(horizontalArrangement = Arrangement.spacedBy(Space.xs)) { actions() }
     }
@@ -320,6 +324,33 @@ private fun CommitRow(commit: Commit) {
         }
         Text(
             text = commit.author + " · " + commit.relative,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * How many commits a branch is behind or ahead of what it is measured against.
+ *
+ * Absent at zero rather than shown as "0": a row that says nothing is level, and a list of zeroes
+ * is a list you have to read to learn nothing.
+ */
+@Composable
+private fun Drift(icon: androidx.compose.ui.graphics.vector.ImageVector, count: Int) {
+    if (count <= 0) return
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Space.xxs),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(IconSize.xs),
+        )
+        Text(
+            text = count.toString(),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

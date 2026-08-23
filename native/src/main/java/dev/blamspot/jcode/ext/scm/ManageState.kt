@@ -11,8 +11,22 @@ import kotlinx.coroutines.launch
 /** Which set of branches the manage page is showing. */
 internal enum class BranchTab { Local, Remote }
 
-/** A local branch, with where it tracks and whether it is the one checked out. */
-internal data class LocalBranch(val name: String, val current: Boolean, val upstream: String)
+/**
+ * A local branch, with where it tracks, whether it is checked out, and how far it has drifted.
+ *
+ * [incoming] and [outgoing] are commits its upstream has that it does not, and the reverse. A branch
+ * with no upstream has neither, which is not the same as being level with one.
+ */
+internal data class LocalBranch(
+    val name: String,
+    val current: Boolean,
+    val upstream: String,
+    val incoming: Int = 0,
+    val outgoing: Int = 0,
+)
+
+/** A branch on a remote, measured against the branch that is checked out. */
+internal data class RemoteBranch(val name: String, val incoming: Int = 0, val outgoing: Int = 0)
 
 /** One line of history. */
 internal data class Commit(val hash: String, val author: String, val relative: String, val subject: String)
@@ -46,11 +60,10 @@ internal class ManageState(
         private set
 
     var tab by mutableStateOf(BranchTab.Local)
-    var newBranch by mutableStateOf("")
     var confirm by mutableStateOf<Confirm?>(null)
 
     val local = mutableStateListOf<LocalBranch>()
-    val remote = mutableStateListOf<String>()
+    val remote = mutableStateListOf<RemoteBranch>()
     val commits = mutableStateListOf<Commit>()
 
     // --- boot ---------------------------------------------------------------------------------
@@ -87,29 +100,35 @@ internal class ManageState(
         val root = repo ?: return
         // Every format string is quoted: it reaches git through a shell, and `%(refname:short)`
         // unquoted opens a subshell at the first bracket.
-        val locals = git.run(root, "branch --format=" + Git.quote("%(refname:short)\t%(HEAD)\t%(upstream:short)"))
+        // `%(upstream:track)` carries the drift, so the whole list still costs one command.
+        val locals = git.run(
+            root,
+            "branch --format=" + Git.quote("%(refname:short)\t%(HEAD)\t%(upstream:short)\t%(upstream:track)"),
+        )
         local.replaceWith(
             if (!locals.ok) emptyList() else locals.stdout.lines()
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
                 .map { line ->
                     val parts = line.split('\t')
+                    val track = parts.getOrElse(3) { "" }
                     LocalBranch(
                         name = parts.getOrElse(0) { "" },
                         current = parts.getOrElse(1) { "" } == "*",
                         upstream = parts.getOrElse(2) { "" },
+                        incoming = count(track, "behind"),
+                        outgoing = count(track, "ahead"),
                     )
                 }
                 .filter { it.name.isNotEmpty() },
         )
 
         val remotes = git.run(root, "branch -r --format=" + Git.quote("%(refname:short)"))
-        remote.replaceWith(
-            if (!remotes.ok) emptyList() else remotes.stdout.lines()
-                .map { it.trim() }
-                // origin/HEAD is a pointer at another branch in this list, not a branch of its own.
-                .filter { it.isNotEmpty() && !it.contains("/HEAD") },
-        )
+        val names = if (!remotes.ok) emptyList() else remotes.stdout.lines()
+            .map { it.trim() }
+            // origin/HEAD points at another ref in this list rather than being one.
+            .filter { it.isNotEmpty() && !it.contains("/HEAD") }
+        remote.replaceWith(measureRemotes(root, names))
     }
 
     private suspend fun loadCommits() {
@@ -128,6 +147,39 @@ internal class ManageState(
                     )
                 },
         )
+    }
+
+    /**
+     * How far each remote branch is from the one checked out.
+     *
+     * A remote ref has no upstream of its own, so there is nothing to read the drift off — it has to
+     * be measured, one `rev-list` per row. They go in a single shell loop rather than one exec
+     * apiece, and the count is capped, so a repository with a long remote list cannot stall the
+     * page. Rows past the cap still appear; they just carry no counts.
+     */
+    private suspend fun measureRemotes(root: String, names: List<String>): List<RemoteBranch> {
+        if (names.isEmpty()) return emptyList()
+        val measured = names.take(REMOTE_MEASURE_LIMIT)
+        val g = Git.prefixFor(root)
+        val loop = "for r in " + measured.joinToString(" ") { Git.quote(it) } + "; do " +
+            "printf '%s\\t' \"\$r\"; " + g + "rev-list --left-right --count \"HEAD...\$r\" 2>/dev/null; " +
+            "printf '\\n'; done"
+        val r = git.shell(root, loop, timeoutMs = 60_000L)
+        // `--left-right --count A...B` prints what only A has, then what only B has. From HEAD's
+        // side that is what we would send, then what we would receive.
+        val drift = HashMap<String, Pair<Int, Int>>()
+        if (r.ok) {
+            r.stdout.lines().forEach { line ->
+                val parts = line.split('	')
+                if (parts.size >= 3) {
+                    drift[parts[0]] = (parts[2].trim().toIntOrNull() ?: 0) to (parts[1].trim().toIntOrNull() ?: 0)
+                }
+            }
+        }
+        return names.map { name ->
+            val d = drift[name]
+            RemoteBranch(name, d?.first ?: 0, d?.second ?: 0)
+        }
     }
 
     // --- actions ------------------------------------------------------------------------------
@@ -150,15 +202,26 @@ internal class ManageState(
 
     fun fetch() = run("fetch --all --prune", "Fetched.", timeoutMs = 180_000L)
 
-    fun create() {
-        val name = newBranch.trim()
-        if (name.isEmpty()) {
-            messageIsError = true
-            message = "Enter a branch name."
-            return
+    /**
+     * Ask for a name, then branch and switch to it.
+     *
+     * A prompt rather than a field kept open above the list: creating a branch is occasional, and a
+     * permanently-parked input spent a row of the card on it every time the page was opened to read
+     * the list instead.
+     */
+    fun promptCreate() {
+        confirm = Confirm(
+            title = "New branch",
+            body = "Branch from $branch and switch to it.",
+            action = "Create",
+            destructive = false,
+            input = "",
+            placeholder = "new-branch-name",
+        ) { name ->
+            if (name.isNotEmpty()) {
+                run("checkout -b " + Git.quote(name), "Created $name", timeoutMs = 120_000L)
+            }
         }
-        newBranch = ""
-        run("checkout -b " + Git.quote(name), "Created $name", timeoutMs = 120_000L)
     }
 
     /**
@@ -266,3 +329,10 @@ internal class ManageState(
     /** The branch part of `origin/feature`, which is what you check out locally. */
     fun localNameOf(remoteBranch: String): String = remoteBranch.substringAfter('/', remoteBranch)
 }
+
+/** The number after a word in `%(upstream:track)` — "behind" in "[ahead 1, behind 2]". */
+private fun count(track: String, word: String): Int =
+    Regex(word + " (\\d+)").find(track)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+
+/** Enough rows that a normal repository is fully measured, few enough that a huge one is not slow. */
+private const val REMOTE_MEASURE_LIMIT = 40
