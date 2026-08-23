@@ -59,8 +59,19 @@ internal fun ScmPanel(state: ScmState, modifier: Modifier = Modifier) {
         when {
             state.booting -> CenteredNote("Looking for a repository…", spinner = true)
             state.repos.isEmpty() -> CenteredNote(
-                "No git repository here.",
-                detail = "Open a project that is one, or run git init.",
+                text = "No git repository here.",
+                detail = state.projectPath?.let { "Start tracking ${Git.baseName(it)} with git." }
+                    ?: "Open a project to use Source Control.",
+                action = state.projectPath?.let {
+                    {
+                        CompactFilledButton(
+                            text = "Initialize Repository",
+                            onClick = { state.initRepo() },
+                            enabled = !state.busy,
+                            busy = state.busy,
+                        )
+                    }
+                },
             )
             state.error != null -> RepoError(state)
             else -> RepoBody(state)
@@ -350,7 +361,12 @@ private fun RepoError(state: ScmState) {
 }
 
 @Composable
-private fun CenteredNote(text: String, detail: String? = null, spinner: Boolean = false) {
+private fun CenteredNote(
+    text: String,
+    detail: String? = null,
+    spinner: Boolean = false,
+    action: (@Composable () -> Unit)? = null,
+) {
     Box(modifier = Modifier.fillMaxSize().padding(Space.xl), contentAlignment = Alignment.Center) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -382,6 +398,9 @@ private fun CenteredNote(text: String, detail: String? = null, spinner: Boolean 
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            action?.let {
+                Box(modifier = Modifier.padding(top = Space.xs)) { it() }
             }
         }
     }

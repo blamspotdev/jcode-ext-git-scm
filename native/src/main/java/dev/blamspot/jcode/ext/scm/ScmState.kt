@@ -43,6 +43,10 @@ internal class ScmState(
     val unstaged = mutableStateListOf<FileEntry>()
     val conflicts = mutableStateListOf<FileEntry>()
 
+    /** The open project's guest path — where a repository would be created if there isn't one. */
+    var projectPath by mutableStateOf<String?>(null)
+        private set
+
     var busy by mutableStateOf(false)
         private set
     var booting by mutableStateOf(true)
@@ -75,9 +79,8 @@ internal class ScmState(
         scope.launch {
             booting = true
             error = null
-            val folders = host.workspaceFolders().ifEmpty {
-                listOfNotNull(host.projectInfo()?.path)
-            }
+            projectPath = host.projectInfo()?.path
+            val folders = host.workspaceFolders().ifEmpty { listOfNotNull(projectPath) }
             val found = LinkedHashMap<String, RepoInfo>()
             for (folder in folders) {
                 val top = git.run(folder, "rev-parse --show-toplevel 2>/dev/null", timeoutMs = 20_000L)
@@ -93,6 +96,29 @@ internal class ScmState(
                 injectIgnored(active.root)
                 refreshAll()
             }
+        }
+    }
+
+    /**
+     * Create a repository in the open project.
+     *
+     * Offered from the empty state because telling someone to go and run `git init` is the panel
+     * declining to do the one thing it is for. Re-detects afterwards rather than assuming success:
+     * `init` can fail on a read-only or missing directory, and the output says why.
+     */
+    fun initRepo() {
+        val path = projectPath ?: return
+        if (busy) return
+        scope.launch {
+            busy = true
+            val r = git.run(path, "init", timeoutMs = 60_000L)
+            busy = false
+            val text = r.output.trim()
+            if (r.exitCode != 0) {
+                log = text.ifBlank { "git init failed." }
+                return@launch
+            }
+            boot()
         }
     }
 
