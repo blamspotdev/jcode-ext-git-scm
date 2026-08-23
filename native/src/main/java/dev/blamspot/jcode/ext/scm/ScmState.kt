@@ -475,7 +475,10 @@ internal class ScmState(
                     "characters, no body."
             }
             ) + " Base it only on the diff piped to your stdin. Output ONLY the commit message text — " +
-            "no code fences, no quotes, no preamble."
+            "no code fences, no quotes, no preamble. Add no trailers, sign-offs or attribution of " +
+            "any kind: no Co-Authored-By line, no \"Generated with\" footer, no mention of the tool " +
+            "that wrote it. The message is the author's, and every agent CLI has its own standing " +
+            "instruction to sign commits that would otherwise apply here."
 
         val modelArg = if (model.isNotEmpty()) " --model " + Git.quote(model) else ""
         val toolCmd = when (tool) {
@@ -499,7 +502,7 @@ internal class ScmState(
                 }
                 return@launch
             }
-            val message = raw.replace(FENCE_OPEN, "").replace(FENCE_CLOSE, "").trim()
+            val message = cleanDraft(raw)
             if (message.isEmpty()) log = "The agent returned an empty message." else commitMessage = message
         }
     }
@@ -630,6 +633,51 @@ private val IDENTITY_ERROR = Regex("who you are|user\\.email|empty ident|Author 
 
 private val FENCE_OPEN = Regex("^\\s*```[a-z]*\\s*\\n?", RegexOption.IGNORE_CASE)
 private val FENCE_CLOSE = Regex("\\n?```\\s*$")
+
+/**
+ * Attribution an agent signs its own work with.
+ *
+ * The prompt asks it not to, but a prompt is advice and the agent CLIs carry their own standing
+ * instruction to sign what they write — so this removes it rather than hoping. Stripping every
+ * `Co-Authored-By` is safe here precisely because the message was drafted from a diff: the agent has
+ * no way to know of a real human co-author, so any trailer it produced is the tool naming itself.
+ */
+private val ATTRIBUTION_LINE = Regex(
+    "^[ \\t]*(?:Co-Authored-By:|(?:\\S+[ \\t]+)?(?:Generated|Created) with\\b)[^\\n]*$",
+    setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE),
+)
+
+/** Colour and cursor control an agent writes because it assumes it is talking to a terminal. */
+private val ANSI_SEQUENCE = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]")
+
+/**
+ * A tool's own status line.
+ *
+ * `opencode run` prints `> build · <model>` alongside the answer: it has no quiet mode, only
+ * `--format json`, which would need an event parser this plugin does not carry. The middle dot is
+ * what makes the line safe to match — a commit message does not open a line with `>` and then use
+ * one.
+ */
+private val TOOL_BANNER = Regex("^[ \\t]*>[ \\t].*\u00B7.*$", RegexOption.MULTILINE)
+
+/**
+ * What the agent meant to say, without what its terminal wrapper added around it.
+ *
+ * The prompt asks for the message alone, but these CLIs are built to be watched by a person: they
+ * colour their output and label the session they are running. Pasting that into the commit box gives
+ * you a message with escape codes in it.
+ */
+private fun cleanDraft(raw: String): String =
+    ANSI_SEQUENCE.replace(raw, "")
+        .replace(FENCE_OPEN, "")
+        .replace(FENCE_CLOSE, "")
+        .let { TOOL_BANNER.replace(it, "") }
+        .let { ATTRIBUTION_LINE.replace(it, "") }
+        .lines()
+        .dropWhile { it.isBlank() }
+        .dropLastWhile { it.isBlank() }
+        .joinToString("\n")
+        .trim()
 
 /**
  * Percent-encode one segment of a view id, the way `encodeURIComponent` does.

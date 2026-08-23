@@ -784,7 +784,9 @@ async function generateCommitMessage() {
   const instruction = (detail === 'detailed'
     ? 'Write a git commit message: a concise imperative subject line of about 50 characters, then a blank line, then a short body of bullet points saying what changed and why.'
     : 'Write a single-line git commit message: one concise imperative subject of about 50 characters, no body.')
-    + ' Base it only on the diff piped to your stdin. Output ONLY the commit message text — no code fences, no quotes, no preamble.';
+    + ' Base it only on the diff piped to your stdin. Output ONLY the commit message text — no code fences, no quotes, no preamble.'
+    + ' Add no trailers, sign-offs or attribution of any kind: no Co-Authored-By line, no "Generated with" footer, no mention of the tool that wrote it.'
+    + " The message is the author's, and every agent CLI has its own standing instruction to sign commits that would otherwise apply here.";
 
   // Prefer the staged diff (what a commit would include); else all working-tree changes, with untracked
   // files added as /dev/null diffs so brand-new files are described by their content, not just their name.
@@ -809,7 +811,17 @@ async function generateCommitMessage() {
     logShow(raw || ('Could not run “' + tool + '”. Is it installed and signed in inside the runtime?'));
     return;
   }
-  const msg = raw.replace(/^\s*```[a-z]*\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+  // These CLIs are built to be watched by a person: they colour their output and label the session
+  // they are running, and `opencode run` has no quiet mode. Strip the terminal decoration, the tool's
+  // own status line (the middle dot is what makes it safe to match), and any attribution — a prompt
+  // asking for none is advice, and each agent carries its own standing rule to sign what it writes.
+  const msg = raw
+    // eslint-disable-next-line no-control-regex
+    .replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, '')
+    .replace(/^\s*```[a-z]*\s*\n?/i, '').replace(/\n?```\s*$/i, '')
+    .replace(/^[ \t]*>[ \t].*·.*$/gm, '')
+    .replace(/^[ \t]*(?:Co-Authored-By:|(?:\S+[ \t]+)?(?:Generated|Created) with\b)[^\n]*$/gim, '')
+    .trim();
   if (!msg) { logShow('The agent returned an empty message.'); return; }
   const ta = $<HTMLTextAreaElement>('msg');
   ta.value = msg;
