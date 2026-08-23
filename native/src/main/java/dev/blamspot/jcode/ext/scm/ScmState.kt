@@ -471,7 +471,10 @@ internal class ScmState(
                 "Write a single-line git commit message: one concise imperative subject of about 50 " +
                     "characters, no body."
             }
-            ) + " Base it only on the diff piped to your stdin. Output ONLY the commit message text — " +
+            ) + " Your stdin holds the change totals, then the changed files with their line " +
+            "counts, then the diff. Long files are trimmed and both lists may be cut short, so " +
+            "describe the change as a whole rather than only what the visible hunks show. " +
+            "Output ONLY the commit message text — " +
             "no code fences, no quotes, no preamble. Add no trailers, sign-offs or attribution of " +
             "any kind: no Co-Authored-By line, no \"Generated with\" footer, no mention of the tool " +
             "that wrote it. The message is the author's, and every agent CLI has its own standing " +
@@ -484,9 +487,7 @@ internal class ScmState(
             else -> "claude -p" + modelArg + " " + Git.quote(instruction)
         }
         val g = Git.prefixFor(active.root)
-        val collect = "S=\"\$(" + g + "diff --cached)\"; if [ -n \"\$S\" ]; then printf '%s\\n' \"\$S\"; " +
-            "else " + g + "diff; " + g + "ls-files --others --exclude-standard -z | " +
-            "xargs -0 -r -I {} " + g + "diff --no-index --no-color -- /dev/null {} 2>/dev/null; fi"
+        val collect = collectScript(g)
 
         scope.launch {
             generating = true
@@ -502,6 +503,43 @@ internal class ScmState(
             val message = cleanDraft(raw)
             if (message.isEmpty()) log = "The agent returned an empty message." else commitMessage = message
         }
+    }
+
+    /**
+     * What the agent is told about, and how much of it.
+     *
+     * Every part is bounded, because an agent CLI's own system prompt and tool definitions already
+     * claim most of its context window: an unbounded initial import — a whole-repo diff, thousands
+     * of untracked paths — overflows the request before it is read, and the button reports only
+     * "Prompt is too long".
+     *
+     * `--shortstat` leads so the true scale of the change survives whatever is cut below it, then
+     * the file list, then the diff. The per-file cap stops one lockfile or generated file spending
+     * the whole body budget. The untracked pass is capped by file count as well as by bytes: it
+     * forks a git per path, and under proot thousands of those cost minutes for hunks the cap
+     * discards anyway.
+     */
+    private fun collectScript(g: String): String {
+        val d = "$"
+        val cap = "awk -v tot=" + DIFF_BUDGET + " -v per=" + PER_FILE_BUDGET +
+            " '{if(" + d + "0~/^diff --git /){fb=0;fs=0}n=length(" + d + "0)+1;" +
+            "if(cut||tb+n>tot){cut=1}else if(fs||fb+n>per){" +
+            "if(!fs){print \"@@ ... rest of this file omitted ...\";fs=1}}else{print;fb+=n;tb+=n}}" +
+            "END{if(cut)print \"... diff truncated — the totals above cover the full change ...\"}'"
+        fun listCap(what: String) =
+            "awk 'NR<=" + LIST_LIMIT + "{print}END{if(NR>" + LIST_LIMIT + ")printf \"... and %d more " +
+                what + "\n\", NR-" + LIST_LIMIT + "}'"
+        return "if [ -n \"" + d + "(" + g + "diff --cached --name-only)\" ]; then " +
+            "echo 'Staged for commit:'; " + g + "diff --cached --shortstat; " +
+            g + "diff --cached --stat=240,240 | " + listCap("changed files") + "; " +
+            "echo; echo 'Diff:'; " + g + "diff --cached | " + cap + "; " +
+            "else echo 'Working tree changes:'; " + g + "diff --shortstat; " +
+            g + "diff --stat=240,240 | " + listCap("changed files") + "; " +
+            g + "ls-files --others --exclude-standard | sed 's/^/ /;s/" + d + "/ | new file/' | " +
+            listCap("new files") + "; " +
+            "echo; echo 'Diff:'; { " + g + "diff; " + g + "ls-files --others --exclude-standard -z | " +
+            "head -z -n " + UNTRACKED_LIMIT + " | xargs -0 -r -I {} " + g +
+            "diff --no-index --no-color -- /dev/null {} 2>/dev/null; } | " + cap + "; fi"
     }
 
     // --- the extension's own pages --------------------------------------------------------------
@@ -675,3 +713,15 @@ private fun cleanDraft(raw: String): String =
         .dropLastWhile { it.isBlank() }
         .joinToString("\n")
         .trim()
+
+/** Total bytes of diff body the agent is given. */
+private const val DIFF_BUDGET = 96_000
+
+/** Bytes of any one file's diff, so a lockfile cannot spend the whole budget. */
+private const val PER_FILE_BUDGET = 8_000
+
+/** Entries of either file list. */
+private const val LIST_LIMIT = 300
+
+/** Untracked files to diff. Each forks a git, and under proot that is the expensive part. */
+private const val UNTRACKED_LIMIT = 200
