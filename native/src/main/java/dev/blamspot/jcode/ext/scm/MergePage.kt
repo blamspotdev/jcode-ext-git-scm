@@ -1,18 +1,23 @@
 package dev.blamspot.jcode.ext.scm
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.HorizontalDivider
@@ -21,8 +26,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -31,8 +39,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.blamspot.jcode.design.CompactContextMenu
 import dev.blamspot.jcode.design.CompactFilledButton
 import dev.blamspot.jcode.design.CompactOutlinedButton
+import dev.blamspot.jcode.design.ContextAction
+import dev.blamspot.jcode.design.JCodeIcon
 import dev.blamspot.jcode.design.JCodeTheme
 import dev.blamspot.jcode.design.Space
 import dev.blamspot.jcode.design.StrokeWidth
@@ -43,9 +54,9 @@ import kotlinx.coroutines.launch
  * Resolve a file's conflicts, the way TortoiseGitMerge does it.
  *
  * Three views of the whole file: the two sides above, side by side, and the result you are building
- * below them. Not a list of extracted conflicts — a conflict is easiest to judge in the middle of
- * the file it is in, with the lines around it that did not change, and pulling it out of the file is
- * exactly what makes it hard to judge.
+ * below them. Not a list of extracted conflicts — a conflict is easiest to judge in the middle of the
+ * file it is in, with the lines around it that did not change, and pulling it out is exactly what
+ * makes it hard to judge.
  *
  * The three are aligned line for line, with blanks where one side has fewer lines than another. That
  * filler is what makes reading across a row mean anything.
@@ -93,11 +104,6 @@ internal fun MergePage(state: MergeState, modifier: Modifier = Modifier) {
                         color = MaterialTheme.colorScheme.outlineVariant,
                     )
                     Merged(state, rows, bottom, modifier = Modifier.weight(MergedWeight))
-                    HorizontalDivider(
-                        thickness = StrokeWidth.hairline,
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                    )
-                    HandEdit(state)
                 }
             }
         }
@@ -164,7 +170,7 @@ private fun MergeHeader(state: MergeState, onJump: (Int) -> Unit) {
 private fun Sides(
     state: MergeState,
     rows: List<MergeRow>,
-    list: androidx.compose.foundation.lazy.LazyListState,
+    list: LazyListState,
     wide: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -177,46 +183,19 @@ private fun Sides(
             if (wide) PaneTitle("Mine (current)", mine, Modifier.weight(1f))
         }
         // One list holding both columns, so they cannot drift apart: two lists sharing a position is
-        // two lists agreeing to, and one row spanning both is two columns that simply are aligned.
+        // two lists agreeing to, and one row spanning both simply is aligned.
         LazyColumn(state = list, modifier = Modifier.fillMaxSize()) {
             items(rows.size) { i ->
                 val row = rows[i]
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    LineCell(row.theirs, row.theirsNo, row.conflict, state, theirs, horizontal, Modifier.weight(1f)) {
-                        state.editCurrent(state.theirsOf(row.conflict))
-                    }
+                Row(modifier = Modifier.fillMaxWidth().height(RowHeight)) {
+                    SideCell(state, row, row.theirs, row.theirsNo, theirs, horizontal, Modifier.weight(1f))
                     if (wide) {
                         VerticalDivider(
                             thickness = StrokeWidth.hairline,
                             color = MaterialTheme.colorScheme.outlineVariant,
                         )
-                        LineCell(row.mine, row.mineNo, row.conflict, state, mine, horizontal, Modifier.weight(1f)) {
-                            state.editCurrent(state.mineOf(row.conflict))
-                        }
+                        SideCell(state, row, row.mine, row.mineNo, mine, horizontal, Modifier.weight(1f))
                     }
-                }
-            }
-        }
-    }
-}
-
-/** The file being built. */
-@Composable
-private fun Merged(
-    state: MergeState,
-    rows: List<MergeRow>,
-    list: androidx.compose.foundation.lazy.LazyListState,
-    modifier: Modifier = Modifier,
-) {
-    val accent = JCodeTheme.semanticColors.success
-    val horizontal = rememberScrollState()
-    Column(modifier = modifier.fillMaxWidth()) {
-        PaneTitle("Merged", accent, Modifier.fillMaxWidth())
-        LazyColumn(state = list, modifier = Modifier.fillMaxSize()) {
-            items(rows.size) { i ->
-                val row = rows[i]
-                LineCell(row.merged, row.mergedNo, row.conflict, state, accent, horizontal, Modifier.fillMaxWidth()) {
-                    state.goTo(row.conflict)
                 }
             }
         }
@@ -224,22 +203,125 @@ private fun Merged(
 }
 
 /**
- * Typing into the conflict the navigation is on.
+ * One line of one side.
  *
- * The merged pane above shows the whole file and stays aligned with the two sides, which it can only
- * do while its rows are laid out rather than typed into. So the hand-editing happens here, on the
- * one conflict you are looking at, and the pane above shows the result of it.
+ * Long-pressing it is how a conflict gets composed a line at a time: taking a whole side is one tap
+ * on the toolbar, and anything finer than that has to be reachable from the line itself.
  */
 @Composable
-private fun HandEdit(state: MergeState) {
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = Space.lg, vertical = Space.xs)) {
-        FieldLabel("Conflict ${state.current + 1} — edit by hand")
+private fun SideCell(
+    state: MergeState,
+    row: MergeRow,
+    text: String?,
+    number: Int,
+    accent: Color,
+    horizontal: ScrollState,
+    modifier: Modifier = Modifier,
+) {
+    val actions = when {
+        row.conflict < 0 || text == null -> emptyList()
+        state.isTaken(row.conflict, text) -> listOf(
+            ContextAction(JCodeIcon.Minus, "Remove this line") { state.dropLine(row.conflict, text) },
+            ContextAction(JCodeIcon.Add, "Use this line again") { state.useLine(row.conflict, text) },
+        )
+
+        else -> listOf(
+            ContextAction(JCodeIcon.Add, "Use this line") { state.useLine(row.conflict, text) },
+            ContextAction(JCodeIcon.Save, "Use only this line") { state.useOnlyLine(row.conflict, text) },
+            ContextAction(JCodeIcon.Clear, "Clear this conflict", destructive = true) {
+                state.clearConflict(row.conflict)
+            },
+        )
+    }
+    LineCell(
+        text = text,
+        number = number,
+        conflict = row.conflict,
+        mark = state.markForSide(row, text),
+        accent = accent,
+        current = row.conflict >= 0 && row.conflict == state.current,
+        horizontal = horizontal,
+        modifier = modifier,
+        onClick = { if (row.conflict >= 0) state.goTo(row.conflict) },
+        actions = actions,
+    )
+}
+
+/**
+ * The file being built, edited in place.
+ *
+ * The conflict you are on renders as a field rather than as rows, so hand-editing happens in the pane
+ * that shows the result instead of in a strip underneath it. Every other block stays as rows, which
+ * is what keeps this pane lined up with the two above.
+ */
+@Composable
+private fun Merged(
+    state: MergeState,
+    rows: List<MergeRow>,
+    list: LazyListState,
+    modifier: Modifier = Modifier,
+) {
+    val accent = JCodeTheme.semanticColors.success
+    val horizontal = rememberScrollState()
+    val items = remember(rows, state.current) {
+        val out = ArrayList<Pair<MergeRow?, Int>>()
+        var i = 0
+        while (i < rows.size) {
+            val row = rows[i]
+            if (row.conflict >= 0 && row.conflict == state.current) {
+                out += null to row.conflict
+                while (i < rows.size && rows[i].conflict == row.conflict) i++
+            } else {
+                out += row to -1
+                i++
+            }
+        }
+        out
+    }
+    Column(modifier = modifier.fillMaxWidth()) {
+        PaneTitle("Merged", accent, Modifier.fillMaxWidth())
+        LazyColumn(state = list, modifier = Modifier.fillMaxSize()) {
+            items(items.size) { i ->
+                val (row, conflict) = items[i]
+                if (row == null) {
+                    InlineEditor(state, conflict)
+                } else {
+                    Box(modifier = Modifier.fillMaxWidth().height(RowHeight)) {
+                        LineCell(
+                            text = row.merged,
+                            number = row.mergedNo,
+                            conflict = row.conflict,
+                            mark = state.markForMerged(row),
+                            accent = accent,
+                            current = false,
+                            horizontal = horizontal,
+                            modifier = Modifier.fillMaxSize(),
+                            onClick = { if (row.conflict >= 0) state.goTo(row.conflict) },
+                            actions = emptyList(),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** The conflict being worked on, as a field sitting where its lines would be. */
+@Composable
+private fun InlineEditor(state: MergeState, conflict: Int) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(JCodeTheme.semanticColors.warning.copy(alpha = 0.10f))
+            .padding(start = Space.sm, end = Space.sm, top = Space.xxs, bottom = Space.xs),
+    ) {
+        FieldLabel("Conflict ${conflict + 1} — editing")
         CompactField(
-            value = state.resolutionOf(state.current),
+            value = state.resolutionOf(conflict),
             onValueChange = { state.editCurrent(it) },
             placeholder = "(empty — this conflict resolves to nothing)",
             minLines = 1,
-            maxLines = 4,
+            maxLines = 8,
             literal = true,
             monospace = true,
         )
@@ -260,61 +342,89 @@ private fun PaneTitle(label: String, accent: Color, modifier: Modifier = Modifie
 }
 
 /**
- * One line of one version.
+ * One line of one version, with a bar down its left edge saying where it stands.
  *
- * A conflicted line carries its side's colour; the conflict the navigation is on carries it at full
- * strength so you can see where you are without reading the numbers. A null line is a blank held
- * open to keep the three columns level.
+ * Green for a line that is in the merged result, red for one that is not, amber for a conflict line
+ * nothing has been decided about yet. A line all three agree on gets no bar at all — the bars are for
+ * the argument, and a rule beside every settled line would only be a second left margin.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LineCell(
     text: String?,
     number: Int,
     conflict: Int,
-    state: MergeState,
+    mark: LineMark,
     accent: Color,
-    horizontal: androidx.compose.foundation.ScrollState,
+    current: Boolean,
+    horizontal: ScrollState,
     modifier: Modifier = Modifier,
-    onPick: () -> Unit,
+    onClick: () -> Unit,
+    actions: List<ContextAction>,
 ) {
     val colors = MaterialTheme.colorScheme
-    val here = conflict >= 0 && conflict == state.current
+    var menu by remember { mutableStateOf(false) }
     val background = when {
         conflict < 0 -> Color.Transparent
         text == null -> colors.surfaceVariant.copy(alpha = 0.35f)
-        here -> accent.copy(alpha = 0.22f)
+        current -> accent.copy(alpha = 0.22f)
         else -> accent.copy(alpha = 0.10f)
     }
-    Row(
-        modifier = modifier
-            .background(background)
-            .then(if (conflict >= 0) Modifier.clickable(onClick = onPick).handCursor() else Modifier),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = number.takeIf { it > 0 }?.toString().orEmpty(),
-            style = MaterialTheme.typography.labelSmall,
-            fontFamily = FontFamily.Monospace,
-            color = colors.onSurfaceVariant.copy(alpha = 0.55f),
-            textAlign = TextAlign.End,
-            maxLines = 1,
-            modifier = Modifier.width(GutterWidth).padding(end = Space.xs),
-        )
-        Text(
-            text = text?.ifEmpty { " " } ?: " ",
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
-            color = colors.onSurface,
-            maxLines = 1,
-            softWrap = false,
-            modifier = Modifier.weight(1f).horizontalScroll(horizontal).padding(end = Space.sm),
+    val bar = when (mark) {
+        LineMark.Added -> JCodeTheme.semanticColors.success
+        LineMark.Removed -> colors.error
+        LineMark.Conflicted -> JCodeTheme.semanticColors.warning
+        LineMark.None -> Color.Transparent
+    }
+    Box(modifier = modifier) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(background)
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = { if (actions.isNotEmpty()) menu = true },
+                )
+                .handCursor(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(modifier = Modifier.width(BarWidth).fillMaxHeight().background(bar))
+            Text(
+                text = number.takeIf { it > 0 }?.toString().orEmpty(),
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                color = colors.onSurfaceVariant.copy(alpha = 0.55f),
+                textAlign = TextAlign.End,
+                maxLines = 1,
+                modifier = Modifier.width(GutterWidth).padding(end = Space.xs),
+            )
+            Text(
+                text = text?.ifEmpty { " " } ?: " ",
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = colors.onSurface,
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier.weight(1f).horizontalScroll(horizontal).padding(end = Space.sm),
+            )
+        }
+        CompactContextMenu(
+            expanded = menu,
+            onDismissRequest = { menu = false },
+            listActions = actions,
         )
     }
 }
 
+/** Wide enough to read as a rule beside the line rather than as part of the gutter. */
+private val BarWidth = 3.dp
+
+/** Fixed, so a row in one pane is the same height as the row across from it. */
+private val RowHeight = 22.dp
+
 /** The two sides get the larger share; the result needs less room than the argument about it. */
-private const val SidesWeight = 0.58f
-private const val MergedWeight = 0.42f
+private const val SidesWeight = 0.55f
+private const val MergedWeight = 0.45f
 
 /** Below this the two sides become two columns of ellipsis, so only Theirs is shown. */
 private val MergeSplitMinWidth = 640.dp

@@ -66,6 +66,15 @@ internal fun parseConflicts(raw: String): List<MergeSegment> {
 }
 
 /**
+ * Where a line stands relative to the merged result — the bar down its left edge.
+ *
+ * Added and Removed are about the result, not about the file: a side's line is "added" once the
+ * result carries it and "removed" while it does not. Conflicted is the third state, for a block
+ * still holding exactly what git left there, which is the one that means nothing has been decided.
+ */
+internal enum class LineMark { None, Conflicted, Added, Removed }
+
+/**
  * One line of the file, in all three versions at once.
  *
  * Null means the version has no line here — one side said three lines where the other said one, so
@@ -199,6 +208,36 @@ internal class MergeState(
     fun editCurrent(text: String) = choose(segmentOf(current), text)
 
     /**
+     * What bar a side's line gets.
+     *
+     * Green once the line is in the merged result, red while it is not. Scanning a side that way
+     * shows what you have taken without reading the result and comparing by eye — which is the whole
+     * job when a conflict runs to more lines than fit on a screen.
+     */
+    fun markForSide(row: MergeRow, line: String?): LineMark = when {
+        row.conflict < 0 || line == null -> LineMark.None
+        isTaken(row.conflict, line) -> LineMark.Added
+        else -> LineMark.Removed
+    }
+
+    /**
+     * What bar a merged line gets.
+     *
+     * A blank inside a conflict is a line one side offered and the result does not carry, so it is
+     * marked removed; a line the result does carry is added. Amber is for a conflict still holding
+     * exactly what git left there, which is the one state that means "not decided yet".
+     */
+    fun markForMerged(row: MergeRow): LineMark = when {
+        row.conflict < 0 -> LineMark.None
+        row.merged == null -> LineMark.Removed
+        untouched(row.conflict) -> LineMark.Conflicted
+        else -> LineMark.Added
+    }
+
+    /** Whether a conflict still holds the seeded default, i.e. nothing has been decided about it. */
+    private fun untouched(n: Int): Boolean = resolutionOf(n) == mineOf(n)
+
+    /**
      * The whole file, three versions side by side.
      *
      * Built rather than shown as hunks because that is the thing TortoiseGitMerge gets right: a
@@ -242,6 +281,42 @@ internal class MergeState(
         }
         return out
     }
+
+
+    /** The lines the merged result currently holds for conflict [n]. */
+    fun mergedLinesOf(n: Int): List<String> {
+        val text = resolutionOf(n)
+        return if (text.isEmpty()) emptyList() else text.split('\n')
+    }
+
+    /**
+     * Add one line from either side to the merged result.
+     *
+     * Appended rather than inserted at its own position: composing a block a line at a time is done
+     * in the order you pick them, and an insert that guessed the position would move lines you had
+     * already placed.
+     */
+    fun useLine(n: Int, line: String) {
+        val lines = mergedLinesOf(n) + line
+        choose(segmentOf(n), lines.joinToString("\n"))
+    }
+
+    /** Make one line the whole of the merged result for this conflict. */
+    fun useOnlyLine(n: Int, line: String) = choose(segmentOf(n), line)
+
+    /** Drop the first copy of a line from the merged result. */
+    fun dropLine(n: Int, line: String) {
+        val lines = mergedLinesOf(n).toMutableList()
+        val at = lines.indexOf(line)
+        if (at < 0) return
+        lines.removeAt(at)
+        choose(segmentOf(n), lines.joinToString("\n"))
+    }
+
+    fun clearConflict(n: Int) = choose(segmentOf(n), "")
+
+    /** Whether a side's line has been taken into the result — what its bar reports. */
+    fun isTaken(n: Int, line: String?): Boolean = line != null && line in mergedLinesOf(n)
 
     /** Conflict [n]'s incoming text. */
     fun theirsOf(n: Int): String =
