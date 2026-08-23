@@ -553,6 +553,9 @@ private fun CommitBox(state: ScmState) {
             value = state.commitMessage,
             onValueChange = { state.commitMessage = it },
             placeholder = "Message",
+            // Two rows before anything is typed, four at most. One row read as a search box, and a
+            // commit message is a subject and a body; four is where it stops eating the file list.
+            minLines = 2,
             maxLines = 4,
             // Beside the message rather than floating in its corner: drafting one is something you
             // do to the field, and an icon parked over the text was in the way of reading it.
@@ -734,6 +737,7 @@ private fun CompactField(
     onValueChange: (String) -> Unit,
     placeholder: String,
     modifier: Modifier = Modifier,
+    minLines: Int = 1,
     maxLines: Int = 1,
     trailing: (@Composable () -> Unit)? = null,
 ) {
@@ -761,6 +765,7 @@ private fun CompactField(
                     onValueChange = onValueChange,
                     textStyle = MaterialTheme.typography.bodySmall.copy(color = colors.onSurface),
                     cursorBrush = SolidColor(colors.primary),
+                    minLines = minLines,
                     maxLines = maxLines,
                     singleLine = maxLines == 1,
                     modifier = Modifier.fillMaxWidth(),
