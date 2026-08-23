@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -97,24 +98,44 @@ private fun CommitHeader(state: CommitState, wide: Boolean) {
                 ).joinToString(" · "),
             )
             Box(modifier = Modifier.weight(1f))
-            SegmentedToggle(
-                options = CommitCompare.entries.toList(),
-                selected = state.compare,
-                label = { it.label },
-                onSelect = { state.choose(it) },
-            )
-            if (wide) {
-                SegmentedToggle(
-                    options = DiffLayout.entries.toList(),
-                    selected = state.layout,
-                    label = { it.name },
-                    onSelect = { state.layout = it },
-                )
+            if (wide) Controls(state, wide = true)
+        }
+        // On a phone held upright the controls do not fit beside the line that describes the
+        // commit; the last of them was clipped off the right edge rather than dropped, which is
+        // worse than a second row.
+        if (!wide) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = Space.sm),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Space.sm),
+            ) {
+                Controls(state, wide = false)
             }
-            ToggleChip(label = "Tree", on = state.tree) { state.tree = !state.tree }
-            ToggleChip(label = "Wrap", on = state.wrap) { state.wrap = !state.wrap }
         }
     }
+}
+
+/** What to compare against, and how to read it. */
+@Composable
+private fun RowScope.Controls(state: CommitState, wide: Boolean) {
+    SegmentedToggle(
+        options = CommitCompare.entries.toList(),
+        selected = state.compare,
+        label = { it.label },
+        onSelect = { state.choose(it) },
+    )
+    // Side by side needs width the diff itself has to spend; below that there is only one layout.
+    if (wide) {
+        SegmentedToggle(
+            options = DiffLayout.entries.toList(),
+            selected = state.layout,
+            label = { it.name },
+            onSelect = { state.layout = it },
+        )
+    }
+    ToggleChip(label = "Tree", on = state.tree) { state.tree = !state.tree }
+    ToggleChip(label = "Wrap", on = state.wrap) { state.wrap = !state.wrap }
+    Box(modifier = Modifier.weight(1f))
 }
 
 @Composable
