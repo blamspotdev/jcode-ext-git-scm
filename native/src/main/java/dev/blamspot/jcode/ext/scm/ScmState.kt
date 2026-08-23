@@ -62,6 +62,8 @@ internal class ScmState(
     /** Multi-line git output worth showing in full — a push, a failed merge, an init. */
     var log by mutableStateOf<String?>(null)
 
+
+
     var viewMode by mutableStateOf(ViewMode.List)
         private set
 
@@ -338,8 +340,24 @@ internal class ScmState(
         else "restore -- " + Git.quote(entry.path),
     )
 
-    fun pull() = mutate("pull --ff-only", timeoutMs = 180_000L) { r -> if (r.ok) log = r.output.trim().ifBlank { null } }
-    fun push() = mutate("push", timeoutMs = 180_000L) { r -> if (r.ok) log = r.output.trim().ifBlank { null } }
+    /**
+     * Report something that worked.
+     *
+     * Blank output with no [fallback] says nothing at all: a fetch that found nothing to report
+     * should not interrupt to report it.
+     */
+    private fun succeeded(text: String?, fallback: String? = null) {
+        val whole = text?.trim().orEmpty().ifBlank { fallback?.trim().orEmpty() }
+        if (whole.isEmpty()) return
+        val first = whole.lineSequence().firstOrNull { it.isNotBlank() }?.trim() ?: whole
+        // JCode's own snackbar, not one of ours: a word from an extension should arrive where every
+        // other word in the app does. The rest of what git said waits behind the action, and the
+        // action is only offered when there is more of it than the line already on screen.
+        if (first == whole) host.snackbar(first) else host.snackbar(first, "Show detail") { log = whole }
+    }
+
+    fun pull() = mutate("pull --ff-only", timeoutMs = 180_000L) { r -> if (r.ok) succeeded(r.output) }
+    fun push() = mutate("push", timeoutMs = 180_000L) { r -> if (r.ok) succeeded(r.output) }
 
     /**
      * Update the remote-tracking refs without touching the working tree — what ahead/behind reads.
@@ -354,7 +372,7 @@ internal class ScmState(
         if (repo == null || busy) return
         refreshing = true
         mutate("fetch --all --prune", timeoutMs = 180_000L) { r ->
-            if (r.ok) log = r.output.trim().ifBlank { null }
+            if (r.ok) succeeded(r.output)
             refreshStashes()
             refreshing = false
         }
@@ -378,15 +396,18 @@ internal class ScmState(
                 else -> "commit -m " + Git.quote(commitMessage)
             }
             var r = git.run(active.root, args, timeoutMs = 120_000L)
+            var ok = r.ok
             val parts = mutableListOf(if (r.ok) r.output.trim() else r.failure)
             if (r.ok) {
                 commitMessage = ""
                 if (variant == CommitVariant.Sync) {
                     r = git.run(active.root, "pull --ff-only", timeoutMs = 180_000L)
+                    if (!r.ok) ok = false
                     parts += if (r.ok) r.output.trim() else r.failure
                 }
                 if (variant == CommitVariant.Push || variant == CommitVariant.Sync) {
                     r = git.run(active.root, "push", timeoutMs = 180_000L)
+                    if (!r.ok) ok = false
                     parts += if (r.ok) r.output.trim() else r.failure
                 }
             }
@@ -395,7 +416,12 @@ internal class ScmState(
             // Git's "please tell me who you are" is a setup step, not an error to read: swap the
             // wall of text for the two fields that end it.
             needsIdentity = IDENTITY_ERROR.containsMatchIn(text)
-            log = if (needsIdentity) null else text.ifBlank { null }
+            when {
+                // The two fields that end it are answer enough; the wall of text is not.
+                needsIdentity -> log = null
+                ok -> succeeded(text)
+                else -> log = text.ifBlank { null }
+            }
             refreshStatus()
         }
     }
@@ -417,7 +443,7 @@ internal class ScmState(
             busy = false
             if (r.ok) {
                 needsIdentity = false
-                log = "Identity saved — commit again."
+                succeeded("Identity saved — commit again.")
             } else {
                 log = r.failure
             }
@@ -618,7 +644,7 @@ internal class ScmState(
                 "stash push --include-untracked" + if (message.isNotEmpty()) " -m " + Git.quote(message) else "",
             ) { r ->
                 // Only claim it worked when it worked: mutate reports the failure itself.
-                if (r.ok) log = r.output.trim().ifBlank { "Changes stashed." }
+                if (r.ok) succeeded(r.output, "Changes stashed.")
                 refreshStashes()
             }
         }
@@ -648,7 +674,7 @@ internal class ScmState(
     private fun confirmStash(title: String, body: String, action: String, args: String) {
         confirm = Confirm(title, body, action) {
             mutate(args) { r ->
-                if (r.ok) log = r.output.trim().ifBlank { null }
+                if (r.ok) succeeded(r.output)
                 refreshStashes()
             }
         }

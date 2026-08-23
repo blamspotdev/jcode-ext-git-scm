@@ -85,4 +85,4 @@ entry:
   native:
     dex: lib/scm.dex
     class: dev.blamspot.jcode.ext.scm.ScmExtension
-    abi: 5
+    abi: 6
