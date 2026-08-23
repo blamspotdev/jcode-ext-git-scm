@@ -181,12 +181,16 @@ internal class MergeState(
             // Every segment, not only the conflicts: the merged pane is the result, and the
             // result is editable throughout.
             //
-            // A conflict starts empty. Starting it on our side would show a result for something
-            // nothing has been decided about yet — it reads as resolved, and the one outcome a
-            // merge tool must not make easy is shipping a side you never chose.
+            // A conflict starts as question marks and counts as unanswered. Starting it on our
+            // side would show a result for something nothing has been decided about yet — it reads
+            // as resolved, and the one outcome a merge tool must not make easy is shipping a side
+            // you never chose. They are the result rather than a drawing of one, so they are lines
+            // like any other and are numbered like any other; the save is what refuses to let them
+            // reach the file.
             resolutions.replaceWith(
-                parsed.map { if (it.conflict) "" else it.text.joinToString("\n") },
+                parsed.map { if (it.conflict) questionMarks(it) else it.text.joinToString("\n") },
             )
+            open.replaceWith(parsed.indices.filter { parsed[it].conflict })
             conflicted = parsed.any { it.conflict }
             editing = parsed.indexOfFirst { it.conflict }
             loading = false
@@ -205,6 +209,15 @@ internal class MergeState(
     var revision by mutableStateOf(0)
         private set
 
+    /** Conflicts still holding their question marks, by segment. */
+    private val open = mutableStateListOf<Int>()
+
+    /** Whether a conflict is still holding them — that is, whether it has been answered at all. */
+    fun unanswered(segment: Int): Boolean = segment in open
+
+    /** How many are left, which is what a save will not step over. */
+    val unansweredCount: Int get() = open.size
+
     /** The segment open for editing in the merged pane; -1 while none is. */
     var editing by mutableStateOf(-1)
         private set
@@ -222,6 +235,8 @@ internal class MergeState(
     fun choose(index: Int, text: String) {
         if (index !in resolutions.indices) return
         resolutions[index] = text
+        // Touching a conflict at all is answering it: whatever is there now, it is not the question.
+        open.removeAll { it == index }
         revision++
     }
 
@@ -303,6 +318,25 @@ internal class MergeState(
     }
 
 
+    /**
+     * A conflict nobody has answered, written the way TortoiseGitMerge writes it: the lines that
+     * are in question, filled with question marks.
+     *
+     * Better than leaving it blank — blank looks like a decision to delete, and this looks like
+     * what it is. One run per line of the longer side, each as wide as the line it stands in for,
+     * so the shape of what is missing is visible before it is chosen.
+     */
+    private fun questionMarks(segment: MergeSegment): String {
+        val lines = maxOf(segment.theirs.size, segment.ours.size)
+        return (0 until lines).joinToString("\n") { at ->
+            val width = maxOf(
+                segment.theirs.getOrNull(at)?.length ?: 0,
+                segment.ours.getOrNull(at)?.length ?: 0,
+            )
+            "?".repeat(width.coerceIn(3, 72))
+        }
+    }
+
     /** The lines the merged result currently holds for conflict [n]. */
     fun mergedLinesOf(n: Int): List<String> {
         val text = resolutionOf(n)
@@ -317,8 +351,10 @@ internal class MergeState(
      * already placed.
      */
     fun useLine(n: Int, line: String) {
-        val lines = mergedLinesOf(n) + line
-        choose(segmentOf(n), lines.joinToString("\n"))
+        val at = segmentOf(n)
+        // Question marks are not lines to add to — the first line taken replaces them outright.
+        val lines = if (unanswered(at)) listOf(line) else mergedLinesOf(n) + line
+        choose(at, lines.joinToString("\n"))
     }
 
     /** Drop the first copy of a line from the merged result. */
@@ -358,6 +394,18 @@ internal class MergeState(
     fun save() {
         val root = repo ?: return
         if (busy) return
+        if (open.isNotEmpty()) {
+            // The question marks would go into the file as themselves. Refusing is the whole reason
+            // it is safe to show them there in the first place.
+            val n = open.size
+            message = if (n == 1) {
+                "One conflict is still unanswered. Resolve it before saving."
+            } else {
+                "$n conflicts are still unanswered. Resolve them before saving."
+            }
+            failed = true
+            return
+        }
         scope.launch {
             busy = true
             message = "Saving…"

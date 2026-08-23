@@ -504,7 +504,13 @@ private fun Merged(
                             number = row.mergedNo,
                             conflict = row.conflict,
                             mark = state.markForMerged(row),
-                            accent = accent,
+                            // Unanswered reads red wherever it appears, not only in the block
+                            // currently open.
+                            accent = if (state.unanswered(row.segment)) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                accent
+                            },
                             current = false,
                             horizontal = horizontal,
                             modifier = Modifier.fillMaxSize(),
@@ -553,13 +559,12 @@ private fun InlineEditor(
     val value = state.textOf(segment)
     val count = if (value.isEmpty()) 0 else value.count { it == '\n' } + 1
     val lineHeight = with(LocalDensity.current) { RowHeight.toSp() }
-    val block = state.segments.getOrNull(segment)
-    val conflict = block?.conflict == true
-    // Red for a conflict with nothing in it yet: empty is the state that still needs an answer, and
-    // it should read as unfinished rather than as a block that happens to be blank. Amber once
-    // something has been put there, and neither for a block that was never in conflict.
+    val conflict = state.segments.getOrNull(segment)?.conflict == true
+    val unanswered = conflict && state.unanswered(segment)
+    // Red while it is still a question, amber once it has been answered, and neither for a block
+    // that was never in conflict.
     val accent = when {
-        conflict && value.isEmpty() -> colors.error
+        unanswered -> colors.error
         conflict -> JCodeTheme.semanticColors.warning
         else -> colors.primary
     }
@@ -572,7 +577,7 @@ private fun InlineEditor(
             // pale over a dark ground does not. Painted rather than laid out: a bar that fills the
             // row's height cannot, inside a list item whose height is not bounded until it is
             // measured, which is why there was no bar down the side of this block at all.
-            .background(accent.copy(alpha = if (conflict && value.isEmpty()) 0.22f else 0.14f))
+            .background(accent.copy(alpha = if (unanswered) 0.22f else 0.14f))
             .drawBehind { drawRect(accent, size = Size(bar, size.height)) },
     ) {
         Spacer(modifier = Modifier.width(BarWidth))
@@ -599,8 +604,6 @@ private fun InlineEditor(
             cursorColor = colors.primary,
             fontSize = CodeSize,
             lineHeight = lineHeight,
-            placeholder = if (conflict && value.isEmpty()) unanswered(block) else "",
-            placeholderColor = accent,
             modifier = Modifier
                 .weight(1f)
                 .padding(end = Space.sm)
@@ -794,24 +797,6 @@ private fun MergedRows.intoRows(item: Int, into: Float, rowHeight: Float, list: 
     val height = heightOf(item, list)
     if (rows <= 1 || height <= 0) return into
     return into / height * (rows * rowHeight)
-}
-
-/**
- * A conflict nobody has answered yet, written the way TortoiseGitMerge writes it: the lines that
- * are in question, filled with question marks.
- *
- * Better than leaving the block blank — blank looks like a decision to delete, and this looks like
- * what it is. Each stands in for one line of the longer side, so the shape of what is missing is
- * visible before it is chosen. It is a placeholder and never part of the result.
- */
-private fun unanswered(block: MergeSegment?): String {
-    val theirs = block?.theirs.orEmpty()
-    val ours = block?.ours.orEmpty()
-    val lines = maxOf(theirs.size, ours.size)
-    return (0 until lines).joinToString("\n") { at ->
-        val width = maxOf(theirs.getOrNull(at)?.length ?: 0, ours.getOrNull(at)?.length ?: 0)
-        "?".repeat(width.coerceIn(3, 72))
-    }
 }
 
 /** Room left around the caret when the page scrolls to it, so it never sits against an edge. */
