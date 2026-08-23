@@ -1,5 +1,4 @@
 node_modules/
-www/
 *.jext
 lib/
 native/build/

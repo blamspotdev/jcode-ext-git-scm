@@ -1,6 +1,6 @@
 id: jcode.ext.gitscm
 name: Source Control
-version: 0.9.5
+version: 0.10.0
 type: scm
 publisher: jcode
 authors: [jcode, blamspotdev]
@@ -79,9 +79,6 @@ images:
   walkthrough: []
 entry:
   manifest: extension.yaml
-  # The web build stays declared while the native panel is the only native surface: the sign-in,
-  # manage, clone, diff, merge and stash pages are still pages of it.
-  ui: www/index.html
   libs: []
   # Drawn in JCode's own process rather than a WebView. A bare dex, not an APK: this plugin owns no
   # resources — every icon it draws is a vector built in code.

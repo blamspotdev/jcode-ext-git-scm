@@ -7,6 +7,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import dev.blamspot.jcode.ext.api.JCodeNativeExtension
 import dev.blamspot.jcode.ext.api.NativeHost
+import kotlinx.coroutines.CoroutineScope
 
 /**
  * Source Control, native.
@@ -14,12 +15,64 @@ import dev.blamspot.jcode.ext.api.NativeHost
  * The entry point JCode instantiates by name and splices into its own composition. Everything here
  * runs in JCode's process against JCode's Compose runtime — hence the `compileOnly` dependency
  * rules in the build script.
+ *
+ * One extension, several surfaces: the drawer panel plus the pages it opens. Each page owns its own
+ * state and asks git its own questions, because a page opens on its own — restored with a session,
+ * or reached from another page — and cannot see what the panel decided. Only the branch the route
+ * selects is built, so a diff page does not quietly run the panel's whole boot behind it.
  */
 class ScmExtension : JCodeNativeExtension {
 
     @Composable
     override fun Content(host: NativeHost, params: Map<String, String>) {
         val scope = rememberCoroutineScope()
+        val view = params[JCodeNativeExtension.Params.VIEW].orEmpty()
+        when {
+            view == "github" -> {
+                val auth = remember(host, scope) { AuthState(host, scope) }
+                LaunchedEffect(auth) { auth.boot() }
+                AuthPage(auth)
+            }
+
+            view == "manage" -> {
+                val manage = remember(host, scope) { ManageState(host, scope) }
+                LaunchedEffect(manage) { manage.boot() }
+                ManagePage(manage)
+            }
+
+            view == "clone" || view == "remoteRepo" -> {
+                val clone = remember(host, scope, view) {
+                    CloneState(
+                        host = host,
+                        scope = scope,
+                        view = view,
+                        startOn = if (view == "clone") CloneScreen.Form else CloneScreen.Remote,
+                    )
+                }
+                LaunchedEffect(clone) { clone.boot() }
+                ClonePage(clone)
+            }
+
+            view.startsWith("merge:") -> {
+                val merge = remember(host, scope, view) { MergeState(host, scope, view) }
+                LaunchedEffect(merge) { merge.boot() }
+                MergePage(merge)
+            }
+
+            view.startsWith("diff:") || view.startsWith("stash:") -> {
+                val diff = remember(host, scope, view) { DiffState(host, scope, view) }
+                LaunchedEffect(diff) { diff.boot() }
+                DiffPage(diff)
+            }
+
+            // The drawer, and anything unrecognised: a route this plugin cannot draw falls through
+            // to the panel rather than rendering nothing.
+            else -> Panel(host, scope)
+        }
+    }
+
+    @Composable
+    private fun Panel(host: NativeHost, scope: CoroutineScope) {
         val state = remember(host, scope) { ScmState(host, scope) }
 
         // Repo detection is the first thing and belongs to the surface's lifetime, not to a
@@ -40,23 +93,7 @@ class ScmExtension : JCodeNativeExtension {
             onDispose { handle.close() }
         }
 
-        val view = params[JCodeNativeExtension.Params.VIEW].orEmpty()
-        when {
-            view == "manage" -> {
-                val manage = remember(host, scope) { ManageState(host, scope) }
-                LaunchedEffect(manage) { manage.boot() }
-                ManagePage(manage)
-            }
-            view.startsWith("diff:") || view.startsWith("stash:") -> {
-                val diff = remember(host, scope, view) { DiffState(host, scope, view) }
-                LaunchedEffect(diff) { diff.boot() }
-                DiffPage(diff)
-            }
-            // The drawer, and every route not yet drawn natively: sign-in, clone, merge and remote
-            // repo are still the web build's pages. A route this plugin cannot draw must fall
-            // through to the panel rather than render nothing.
-            else -> ScmPanel(state)
-        }
+        ScmPanel(state)
     }
 
     /**

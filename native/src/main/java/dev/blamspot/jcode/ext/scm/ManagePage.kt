@@ -1,7 +1,5 @@
 package dev.blamspot.jcode.ext.scm
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,14 +8,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -33,11 +26,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.blamspot.jcode.design.CompactFilledButton
 import dev.blamspot.jcode.design.CompactOutlinedButton
-import dev.blamspot.jcode.design.IconSize
 import dev.blamspot.jcode.design.JCodeTheme
 import dev.blamspot.jcode.design.Radius
 import dev.blamspot.jcode.design.Space
-import dev.blamspot.jcode.design.StrokeWidth
 import dev.blamspot.jcode.design.handCursor
 
 /**
@@ -55,7 +46,21 @@ internal fun ManagePage(state: ManageState, modifier: Modifier = Modifier) {
             contentPadding = androidx.compose.foundation.layout.PaddingValues(Space.lg),
             verticalArrangement = Arrangement.spacedBy(Space.lg),
         ) {
-            item { PageHeader(state) }
+            item {
+                PageHeader(
+                    icon = ScmIcons.Branch,
+                    title = "Source Control",
+                    subtitle = "Manage branches and view history",
+                ) {
+                    if (state.repo != null) {
+                        CompactOutlinedButton(
+                            text = "Fetch",
+                            onClick = { state.fetch() },
+                            enabled = !state.busy,
+                        )
+                    }
+                }
+            }
 
             when {
                 state.booting -> item { Note("Looking for a repository…", spinner = true) }
@@ -69,70 +74,6 @@ internal fun ManagePage(state: ManageState, modifier: Modifier = Modifier) {
     }
     state.confirm?.let { c -> ConfirmDialog(c) { state.confirm = null } }
 }
-
-@Composable
-private fun PageHeader(state: ManageState) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Space.md),
-    ) {
-        Icon(
-            imageVector = ScmIcons.Branch,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.size(IconSize.xl),
-        )
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "Source Control",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = "Manage branches and view history",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (state.repo != null) {
-            CompactOutlinedButton(
-                text = "Fetch",
-                onClick = { state.fetch() },
-                enabled = !state.busy,
-            )
-        }
-    }
-}
-
-/** A titled slab. The page is a stack of these, the way the settings screens are. */
-@Composable
-private fun Card(title: String, trailing: (@Composable () -> Unit)? = null, content: @Composable ColumnScopeAlias.() -> Unit) {
-    Surface(
-        shape = RoundedCornerShape(Radius.xxl),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        border = BorderStroke(StrokeWidth.hairline, MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(
-            modifier = Modifier.padding(Space.md),
-            verticalArrangement = Arrangement.spacedBy(Space.sm),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                )
-                trailing?.invoke()
-            }
-            content()
-        }
-    }
-}
-
-private typealias ColumnScopeAlias = androidx.compose.foundation.layout.ColumnScope
 
 @Composable
 private fun BranchesCard(state: ManageState) {
@@ -189,14 +130,6 @@ private fun BranchesCard(state: ManageState) {
             }
         }
     }
-}
-
-@Composable
-private fun RowDivider() {
-    HorizontalDivider(
-        thickness = StrokeWidth.hairline,
-        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-    )
 }
 
 /** Local / Remote, as a two-segment switch rather than two buttons that both look pressable. */

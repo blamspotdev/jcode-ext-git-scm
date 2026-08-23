@@ -55,6 +55,9 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -63,7 +66,6 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import dev.blamspot.jcode.design.AlertDialog
-import dev.blamspot.jcode.design.CompactDestructiveButton
 import dev.blamspot.jcode.design.CompactFilledButton
 import dev.blamspot.jcode.design.CompactOutlinedButton
 import dev.blamspot.jcode.design.ControlSize
@@ -736,6 +738,10 @@ internal fun CompactField(
     modifier: Modifier = Modifier,
     minLines: Int = 1,
     maxLines: Int = 1,
+    /** For a value the keyboard must not help with — a URL, a username, an email, a token. */
+    literal: Boolean = false,
+    password: Boolean = false,
+    monospace: Boolean = false,
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -761,7 +767,10 @@ internal fun CompactField(
                 BasicTextField(
                     value = value,
                     onValueChange = onValueChange,
-                    textStyle = MaterialTheme.typography.bodySmall.copy(color = colors.onSurface),
+                    textStyle = MaterialTheme.typography.bodySmall.copy(
+                        color = colors.onSurface,
+                        fontFamily = if (monospace) FontFamily.Monospace else FontFamily.Default,
+                    ),
                     cursorBrush = SolidColor(colors.primary),
                     minLines = minLines,
                     maxLines = maxLines,
@@ -774,8 +783,15 @@ internal fun CompactField(
                     // Safe on the multi-line message box: Android gives a multi-line field a newline
                     // key and reaches the action only from the full-screen editor, so declaring one
                     // does not cost the message its line breaks.
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardOptions = KeyboardOptions(
+                        imeAction = ImeAction.Done,
+                        capitalization = if (literal) KeyboardCapitalization.None
+                        else KeyboardCapitalization.Sentences,
+                        autoCorrectEnabled = !literal,
+                    ),
                     keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }),
+                    visualTransformation = if (password) PasswordVisualTransformation()
+                    else VisualTransformation.None,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }

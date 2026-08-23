@@ -1,5 +1,6 @@
 package dev.blamspot.jcode.ext.scm
 
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import dev.blamspot.jcode.ext.api.NativeExecResult
 import dev.blamspot.jcode.ext.api.NativeHost
 
@@ -66,15 +67,6 @@ internal data class FileEntry(
     val display: String,
     val untracked: Boolean,
 )
-
-/**
- * Whether the command actually ran and succeeded.
- *
- * `exitCode` alone is not enough: when the workbench never got the command to a shell it answers with
- * [NativeExecResult.error] set and everything else empty, which reads as a clean run to anything
- * looking only at the number.
- */
-internal val NativeExecResult.ok: Boolean get() = error == null && exitCode == 0
 
 /** Why it failed, in whatever the run left behind — git's own words for preference. */
 internal val NativeExecResult.failure: String
@@ -214,4 +206,18 @@ internal fun decorationsFrom(status: GitStatus): List<Pair<String, String>> {
     status.staged.forEach { byPath.getOrPut(it.path) { it.code } }
     status.unstaged.forEach { byPath.getOrPut(it.path) { if (it.untracked) "?" else it.code } }
     return byPath.map { (path, status) -> path to status }
+}
+
+/**
+ * What `%x1f` writes between the fields of a log line.
+ *
+ * Named rather than typed in: the byte itself is invisible in an editor and does not survive a
+ * copy-paste, so a literal here would be a field separator nobody could see.
+ */
+internal const val UNIT_SEPARATOR = '\u001F'
+
+/** Swap a state list's whole contents in one go — the shape every reload in this extension takes. */
+internal fun <T> SnapshotStateList<T>.replaceWith(items: List<T>) {
+    clear()
+    addAll(items)
 }

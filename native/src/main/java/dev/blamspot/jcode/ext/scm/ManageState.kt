@@ -4,7 +4,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import dev.blamspot.jcode.ext.api.NativeExecResult
 import dev.blamspot.jcode.ext.api.NativeHost
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -210,17 +209,4 @@ internal class ManageState(
 
     /** The branch part of `origin/feature`, which is what you check out locally. */
     fun localNameOf(remoteBranch: String): String = remoteBranch.substringAfter('/', remoteBranch)
-}
-
-/**
- * What `%x1f` writes between the fields of a log line.
- *
- * Named rather than typed in: the byte itself is invisible in an editor and does not survive a
- * copy-paste, so a literal here would be a field separator nobody could see.
- */
-private const val UNIT_SEPARATOR = '\u001F'
-
-private fun <T> androidx.compose.runtime.snapshots.SnapshotStateList<T>.replaceWith(items: List<T>) {
-    clear()
-    addAll(items)
 }

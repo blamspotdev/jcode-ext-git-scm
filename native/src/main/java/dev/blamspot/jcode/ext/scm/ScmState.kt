@@ -675,8 +675,3 @@ private fun cleanDraft(raw: String): String =
         .dropLastWhile { it.isBlank() }
         .joinToString("\n")
         .trim()
-
-private fun <T> androidx.compose.runtime.snapshots.SnapshotStateList<T>.replaceWith(items: List<T>) {
-    clear()
-    addAll(items)
-}

@@ -191,8 +191,3 @@ internal class DiffState(
         host.openFile(root.trimEnd('/') + "/" + path, line.takeIf { it > 0 })
     }
 }
-
-private fun <T> androidx.compose.runtime.snapshots.SnapshotStateList<T>.replaceWith(items: List<T>) {
-    clear()
-    addAll(items)
-}
