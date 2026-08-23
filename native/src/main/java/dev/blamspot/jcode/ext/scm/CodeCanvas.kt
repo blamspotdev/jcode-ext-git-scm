@@ -21,11 +21,13 @@ import androidx.compose.ui.viewinterop.AndroidView
 /**
  * A text-editing surface that behaves like a code editor rather than a form control.
  *
- * A real View, not Compose's text field, for one reason that cannot be worked around from Compose:
- * in landscape the IME takes over the whole screen unless the editor asks it not to, and the flag
- * that asks — `IME_FLAG_NO_EXTRACT_UI` — is set on the `EditorInfo` handed out by
- * `onCreateInputConnection`. Compose builds that object itself and exposes no way to add a flag to
- * it. JCode's own editor and its browser both override the method for exactly this; so does this.
+ * A real View rather than Compose's text field: this is the pane a merge is hand-edited in, and it
+ * wants an editor's line metrics rather than a form control's — pinned to the same line height the
+ * rows beside it use, which is what keeps the gutter's numbers next to the lines they number.
+ *
+ * It asks the IME to stay out of extract mode itself. JCode asks for that app-wide, but through an
+ * interceptor that reaches Compose's text fields only; a View is on its own, the same way JCode's
+ * own editor and browser are.
  *
  * Everything else about it is chosen to disappear into the pane it sits in: monospace at the size
  * the rows use, no background, no underline, no padding of its own, and multi-line with no IME
@@ -101,8 +103,9 @@ private class CodeEditText(context: Context) : EditText(context) {
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
         val connection = super.onCreateInputConnection(outAttrs)
-        // The whole reason this is a View. Without these the IME covers the screen in landscape and
-        // edits a copy of the text in its own window, which is not what editing a file looks like.
+        // Not covered by the app's Compose-side interceptor, so it asks for itself. Without these
+        // the IME covers the screen in landscape and edits a copy of the text in a window of its
+        // own, which is not what editing a file looks like.
         outAttrs.imeOptions = outAttrs.imeOptions or
             EditorInfo.IME_FLAG_NO_EXTRACT_UI or
             EditorInfo.IME_FLAG_NO_FULLSCREEN
