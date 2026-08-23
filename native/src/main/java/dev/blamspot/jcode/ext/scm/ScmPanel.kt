@@ -25,6 +25,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -49,8 +51,10 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -742,6 +746,7 @@ private fun CompactField(
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
+    val focus = LocalFocusManager.current
     Surface(
         shape = RoundedCornerShape(Radius.md),
         color = colors.surfaceVariant.copy(alpha = 0.3f),
@@ -768,6 +773,16 @@ private fun CompactField(
                     minLines = minLines,
                     maxLines = maxLines,
                     singleLine = maxLines == 1,
+                    // Without a declared action the keyboard invents one, and in the landscape
+                    // full-screen editor that came out as "EXECUTE" — a word for running something,
+                    // over a field that only holds text. Naming it Done also gives the button
+                    // something to do: put the keyboard away.
+                    //
+                    // Safe on the multi-line message box: Android gives a multi-line field a newline
+                    // key and reaches the action only from the full-screen editor, so declaring one
+                    // does not cost the message its line breaks.
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }),
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
