@@ -440,20 +440,13 @@ private fun SideCell(
     horizontal: ScrollState,
     modifier: Modifier = Modifier,
 ) {
+    // One thing to do with a line, and which one follows from whether it is already in the result.
     val actions = when {
         row.conflict < 0 || text == null -> emptyList()
-        state.isTaken(row.conflict, text) -> listOf(
-            ContextAction(JCodeIcon.Minus, "Remove this line") { state.dropLine(row.conflict, text) },
-            ContextAction(JCodeIcon.Add, "Use this line again") { state.useLine(row.conflict, text) },
-        )
+        state.isTaken(row.conflict, text) ->
+            listOf(ContextAction(JCodeIcon.Minus, "Remove this line") { state.dropLine(row.conflict, text) })
 
-        else -> listOf(
-            ContextAction(JCodeIcon.Add, "Use this line") { state.useLine(row.conflict, text) },
-            ContextAction(JCodeIcon.Save, "Use only this line") { state.useOnlyLine(row.conflict, text) },
-            ContextAction(JCodeIcon.Clear, "Clear this conflict", destructive = true) {
-                state.clearConflict(row.conflict)
-            },
-        )
+        else -> listOf(ContextAction(JCodeIcon.Add, "Use this line") { state.useLine(row.conflict, text) })
     }
     val current = row.conflict >= 0 && row.conflict == state.current
     LineCell(

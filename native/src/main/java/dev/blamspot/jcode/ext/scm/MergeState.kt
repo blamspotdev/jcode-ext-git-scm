@@ -317,9 +317,6 @@ internal class MergeState(
         choose(segmentOf(n), lines.joinToString("\n"))
     }
 
-    /** Make one line the whole of the merged result for this conflict. */
-    fun useOnlyLine(n: Int, line: String) = choose(segmentOf(n), line)
-
     /** Drop the first copy of a line from the merged result. */
     fun dropLine(n: Int, line: String) {
         val lines = mergedLinesOf(n).toMutableList()
@@ -328,8 +325,6 @@ internal class MergeState(
         lines.removeAt(at)
         choose(segmentOf(n), lines.joinToString("\n"))
     }
-
-    fun clearConflict(n: Int) = choose(segmentOf(n), "")
 
     /** Whether a side's line has been taken into the result — what its bar reports. */
     fun isTaken(n: Int, line: String?): Boolean = line != null && line in mergedLinesOf(n)
