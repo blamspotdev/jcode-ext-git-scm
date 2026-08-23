@@ -58,6 +58,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
@@ -236,16 +237,9 @@ private fun Toolbar(state: ScmState) {
         ) {
             BranchMenu(state) { branchMenu = false }
         }
-        if (state.ahead > 0 || state.behind > 0) {
-            Text(
-                text = "  ↓${state.behind} ↑${state.ahead}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
         Box(modifier = Modifier.weight(1f))
-        HeaderIcon(ScmIcons.Pull, "Pull") { state.pull() }
-        HeaderIcon(ScmIcons.Push, "Push") { state.push() }
+        HeaderIcon(ScmIcons.Pull, "Pull", badge = state.behind) { state.pull() }
+        HeaderIcon(ScmIcons.Push, "Push", badge = state.ahead) { state.push() }
         HeaderIcon(
             if (state.viewMode == ViewMode.Tree) ScmIcons.List else ScmIcons.Tree,
             if (state.viewMode == ViewMode.Tree) "Show as list" else "Show as tree",
@@ -362,16 +356,50 @@ private fun ColumnScope.BranchMenu(state: ScmState, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun HeaderIcon(icon: ImageVector, label: String, onClick: () -> Unit) {
-    IconButton(onClick = onClick, modifier = Modifier.size(ControlSize.iconButtonSm).handCursor()) {
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(IconSize.sm),
+private fun HeaderIcon(icon: ImageVector, label: String, badge: Int = 0, onClick: () -> Unit) {
+    Box {
+        IconButton(onClick = onClick, modifier = Modifier.size(ControlSize.iconButtonSm).handCursor()) {
+            Icon(
+                imageVector = icon,
+                contentDescription = if (badge > 0) "$label ($badge)" else label,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(IconSize.sm),
+            )
+        }
+        if (badge > 0) CountBadge(badge, Modifier.align(Alignment.TopEnd))
+    }
+}
+
+/**
+ * How far out of step this branch is, on the button that fixes it.
+ *
+ * These counts used to sit as `↓2 ↑1` beside the branch chip — a third thing competing for the one
+ * line that already had the branch name and the toolbar, and a number nowhere near the control it
+ * described. On the buttons the arrow says which direction and the badge says how much.
+ *
+ * Capped at 9+, because past a certain point the answer is "a lot" and the digits stop fitting on a
+ * twenty-eight pixel button.
+ */
+@Composable
+private fun CountBadge(count: Int, modifier: Modifier = Modifier) {
+    Surface(
+        shape = RoundedCornerShape(Radius.pill),
+        color = MaterialTheme.colorScheme.primary,
+        modifier = modifier,
+    ) {
+        Text(
+            text = if (count > 9) "9+" else count.toString(),
+            fontSize = BadgeFontSize,
+            lineHeight = BadgeFontSize,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onPrimary,
+            modifier = Modifier.padding(horizontal = Space.xxs, vertical = Space.hairline),
         )
     }
 }
+
+/** Small enough to sit on the icon rather than replace it. */
+private val BadgeFontSize = 9.sp
 
 /**
  * The commit box and the file lists, in one scroller.
