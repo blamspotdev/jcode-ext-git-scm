@@ -563,9 +563,19 @@ internal class ScmState(
         host.openView("diff:" + mode + ":" + encodeUri(root) + ":" + encodeUri(entry.path))
     }
 
+    /**
+     * Open a stash's patch, under the name it was saved with.
+     *
+     * The name is passed rather than left to the workbench: it labels the page from the route, and
+     * a stash route ends in "stash@{0}" — which says where the stash sits in a list, not what the
+     * user called it. Only this panel has read the name.
+     */
     fun openStash(entry: StashEntry) {
         val root = repo?.root ?: return
-        host.openView("stash:" + encodeUri(root) + ":" + encodeUri(entry.ref))
+        host.openView(
+            "stash:" + encodeUri(root) + ":" + encodeUri(entry.ref),
+            title = entry.desc.ifBlank { entry.ref },
+        )
     }
 
     fun openGitHub() = host.openView("github")

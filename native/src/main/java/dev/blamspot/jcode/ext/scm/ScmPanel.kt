@@ -61,8 +61,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import dev.blamspot.jcode.design.AlertDialog
@@ -746,15 +746,21 @@ internal fun CompactField(
 ) {
     val colors = MaterialTheme.colorScheme
     val focus = LocalFocusManager.current
+    // The app's own field, to the pixel: Radius.xl, a thin outline at 60%, and a quarter-strength
+    // surface tint. Written out rather than reusing CompactSearchField because that one owns a
+    // search glyph and one line, and this holds a commit message — but a field in an extension that
+    // is nearly the app's field reads as a mistake, so it is the app's field or nothing.
     Surface(
-        shape = RoundedCornerShape(Radius.md),
-        color = colors.surfaceVariant.copy(alpha = 0.3f),
-        border = BorderStroke(StrokeWidth.hairline, colors.outlineVariant),
+        shape = RoundedCornerShape(Radius.xl),
+        color = colors.surfaceVariant.copy(alpha = 0.25f),
+        border = BorderStroke(StrokeWidth.thin, colors.outlineVariant.copy(alpha = 0.6f)),
         modifier = modifier.fillMaxWidth(),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(start = Space.sm, end = if (trailing == null) Space.sm else Space.xxs),
+            modifier = Modifier
+                .heightIn(min = FieldMinHeight)
+                .padding(start = Space.sm, end = if (trailing == null) Space.sm else Space.xxs),
         ) {
             Box(modifier = Modifier.weight(1f).padding(vertical = Space.s)) {
                 if (value.isEmpty()) {
@@ -1263,3 +1269,6 @@ private fun LogSheet(text: String, onDismiss: () -> Unit) {
 
 /** Tall enough for a commit summary, short enough to leave the dialog looking like a dialog. */
 private val LogMaxHeight = 320.dp
+
+/** The height every field in the app settles at, so one in a panel is not a different size. */
+private val FieldMinHeight = 36.dp
