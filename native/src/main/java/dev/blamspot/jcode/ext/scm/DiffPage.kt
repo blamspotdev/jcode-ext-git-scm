@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -49,11 +50,13 @@ import androidx.compose.ui.unit.dp
 import dev.blamspot.jcode.design.CompactOutlinedButton
 import dev.blamspot.jcode.design.ControlSize
 import dev.blamspot.jcode.design.IconSize
+import dev.blamspot.jcode.design.JCodeIcon
 import dev.blamspot.jcode.design.JCodeTheme
 import dev.blamspot.jcode.design.Radius
 import dev.blamspot.jcode.design.Space
 import dev.blamspot.jcode.design.StrokeWidth
 import dev.blamspot.jcode.design.handCursor
+import dev.blamspot.jcode.design.jcIcon
 import kotlinx.coroutines.launch
 
 /**
@@ -544,7 +547,15 @@ private fun ActionChip(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (caret) Text(text = "⌄", style = MaterialTheme.typography.labelMedium)
+            // A vector, not a "⌄" character: the glyph sits low, ignores the label's size, and
+            // reads as a stray character rather than as the control's own affordance.
+            if (caret) {
+                Icon(
+                    imageVector = jcIcon(JCodeIcon.ChevronDown),
+                    contentDescription = null,
+                    modifier = Modifier.size(IconSize.xs),
+                )
+            }
         }
     }
 }
