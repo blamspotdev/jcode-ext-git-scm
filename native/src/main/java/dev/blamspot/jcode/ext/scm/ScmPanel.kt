@@ -132,33 +132,43 @@ private fun ConfirmSheet(confirm: ScmState.Confirm, onDismiss: () -> Unit) {
 }
 
 /**
- * Title, repository and branch.
+ * Repository, branch, and the things you do to a branch.
  *
- * Two lines rather than one: the drawer is narrow, and a repository name beside a branch name beside
- * an ahead/behind count is three things competing for the same forty characters.
+ * The title only shows when there is no repository. Once there is one, the branch takes its place:
+ * the drawer already says "SCM" on the tool that opened it, and a headline repeating that was a row
+ * of a short panel spent on something the user had just clicked.
  */
 @Composable
 private fun PanelHeader(state: ScmState) {
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = Space.ms, vertical = Space.s)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "Source Control",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
-            )
-            if (state.busy) {
-                Box(modifier = Modifier.size(ControlSize.iconButtonSm), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(modifier = Modifier.size(IconSize.sm), strokeWidth = StrokeWidth.thick)
-                }
-            } else {
-                HeaderIcon(jcIcon(JCodeIcon.Refresh), "Refresh") { state.boot() }
-            }
-        }
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = Space.ms, vertical = Space.s),
+        verticalArrangement = Arrangement.spacedBy(Space.s),
+    ) {
         if (state.repos.size > 1) RepoChip(state)
-        if (state.repo != null) Toolbar(state)
+        if (state.repo != null) Toolbar(state) else TitleRow(state)
     }
     HorizontalDivider(thickness = StrokeWidth.hairline, color = MaterialTheme.colorScheme.outlineVariant)
+}
+
+/** What the panel calls itself while it has no repository to name instead. */
+@Composable
+private fun TitleRow(state: ScmState) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = "Source Control",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f),
+        )
+        if (state.busy) BusySpinner() else HeaderIcon(jcIcon(JCodeIcon.Refresh), "Refresh") { state.boot() }
+    }
+}
+
+@Composable
+private fun BusySpinner() {
+    Box(modifier = Modifier.size(ControlSize.iconButtonSm), contentAlignment = Alignment.Center) {
+        CircularProgressIndicator(modifier = Modifier.size(IconSize.sm), strokeWidth = StrokeWidth.thick)
+    }
 }
 
 /**
@@ -172,7 +182,7 @@ private fun Toolbar(state: ScmState) {
     var branchMenu by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().padding(top = Space.s),
+        modifier = Modifier.fillMaxWidth(),
     ) {
         Box {
             Surface(
@@ -220,13 +230,17 @@ private fun Toolbar(state: ScmState) {
             if (state.viewMode == ViewMode.Tree) ScmIcons.List else ScmIcons.Tree,
             if (state.viewMode == ViewMode.Tree) "Show as list" else "Show as tree",
         ) { state.toggleViewMode() }
-        // Fetch, sign-in and the history page behind one button: a drawer this narrow cannot hold
-        // seven tap targets in a row without the branch name losing to them.
+        // Fetch where the panel's reload used to be: with a repository open, bringing the remote's
+        // refs down is the thing you actually want from a button in that corner, and re-detecting
+        // the repository is a once-in-a-session act that can live in the menu.
+        if (state.busy) BusySpinner() else HeaderIcon(ScmIcons.Fetch, "Fetch") { state.fetch() }
+        // Sign-in and the history page behind one button: a drawer this narrow cannot hold seven tap
+        // targets in a row without the branch name losing to them.
         var overflow by remember { mutableStateOf(false) }
         Box {
             HeaderIcon(jcIcon(JCodeIcon.MoreVert), "More") { overflow = true }
             DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
-                MenuItem("Fetch", ScmIcons.Fetch) { overflow = false; state.fetch() }
+                MenuItem("Refresh", jcIcon(JCodeIcon.Refresh)) { overflow = false; state.boot() }
                 MenuItem("Branches & history…", ScmIcons.Branch) { overflow = false; state.openManage() }
                 MenuItem("GitHub sign-in…", ScmIcons.GitHub) { overflow = false; state.openGitHub() }
             }
@@ -244,7 +258,7 @@ private fun Toolbar(state: ScmState) {
 private fun RepoChip(state: ScmState) {
     var menu by remember { mutableStateOf(false) }
     val active = state.repo ?: return
-    Box(modifier = Modifier.padding(top = Space.s)) {
+    Box {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Space.xxs),
