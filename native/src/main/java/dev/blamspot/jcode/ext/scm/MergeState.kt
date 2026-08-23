@@ -179,9 +179,13 @@ internal class MergeState(
             val parsed = parseConflicts(r.stdout)
             segments.replaceWith(parsed)
             // Every segment, not only the conflicts: the merged pane is the result, and the
-            // result is editable throughout. A conflict starts on our side, the rest as they are.
+            // result is editable throughout.
+            //
+            // A conflict starts empty. Starting it on our side would show a result for something
+            // nothing has been decided about yet — it reads as resolved, and the one outcome a
+            // merge tool must not make easy is shipping a side you never chose.
             resolutions.replaceWith(
-                parsed.map { (if (it.conflict) it.ours else it.text).joinToString("\n") },
+                parsed.map { if (it.conflict) "" else it.text.joinToString("\n") },
             )
             conflicted = parsed.any { it.conflict }
             editing = parsed.indexOfFirst { it.conflict }

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -40,6 +41,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -493,7 +496,7 @@ private fun Merged(
             items(merged.items.size) { i ->
                 val (row, conflict, firstLine) = merged.items[i]
                 if (row == null) {
-                    InlineEditor(state, conflict, firstLine, caret)
+                    InlineEditor(state, conflict, firstLine, merged.rowsAt(i), caret)
                 } else {
                     Box(modifier = Modifier.fillMaxWidth().height(RowHeight)) {
                         LineCell(
@@ -539,23 +542,39 @@ private fun Merged(
  * it — which is the whole point of showing three versions on one set of rows.
  */
 @Composable
-private fun InlineEditor(state: MergeState, segment: Int, firstLine: Int, caret: Caret) {
+private fun InlineEditor(
+    state: MergeState,
+    segment: Int,
+    firstLine: Int,
+    span: Int,
+    caret: Caret,
+) {
     val colors = MaterialTheme.colorScheme
     val value = state.textOf(segment)
-    val count = if (value.isEmpty()) 1 else value.count { it == '\n' } + 1
+    val count = if (value.isEmpty()) 0 else value.count { it == '\n' } + 1
     val lineHeight = with(LocalDensity.current) { RowHeight.toSp() }
-    // Amber says conflicted, and most blocks are not — they are simply the one being written in.
-    val accent = if (state.segments.getOrNull(segment)?.conflict == true) {
-        JCodeTheme.semanticColors.warning
-    } else {
-        colors.primary
+    val conflict = state.segments.getOrNull(segment)?.conflict == true
+    // Red for a conflict with nothing in it yet: empty is the state that still needs an answer, and
+    // it should read as unfinished rather than as a block that happens to be blank. Amber once
+    // something has been put there, and neither for a block that was never in conflict.
+    val accent = when {
+        conflict && value.isEmpty() -> colors.error
+        conflict -> JCodeTheme.semanticColors.warning
+        else -> colors.primary
     }
+    val bar = with(LocalDensity.current) { BarWidth.toPx() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(accent.copy(alpha = 0.14f)),
+            .heightIn(min = RowHeight * span)
+            // A conflict with nothing in it has to carry the eye across the pane, and a tint that
+            // pale over a dark ground does not. Painted rather than laid out: a bar that fills the
+            // row's height cannot, inside a list item whose height is not bounded until it is
+            // measured, which is why there was no bar down the side of this block at all.
+            .background(accent.copy(alpha = if (conflict && value.isEmpty()) 0.22f else 0.14f))
+            .drawBehind { drawRect(accent, size = Size(bar, size.height)) },
     ) {
-        Box(modifier = Modifier.width(BarWidth).fillMaxHeight().background(accent))
+        Spacer(modifier = Modifier.width(BarWidth))
         Text(
             text = (0 until count).joinToString("\n") { (firstLine + it).toString() },
             style = TextStyle(
