@@ -41,8 +41,13 @@ class ScmExtension : JCodeNativeExtension {
         }
 
         when (params[JCodeNativeExtension.Params.VIEW]) {
-            // The drawer, and for now the only surface: the sign-in, manage, clone, diff, merge and
-            // stash pages are still the web build's. A route this plugin does not draw yet must fall
+            "manage" -> {
+                val manage = remember(host, scope) { ManageState(host, scope) }
+                LaunchedEffect(manage) { manage.boot() }
+                ManagePage(manage)
+            }
+            // The drawer, and every route not yet drawn natively: sign-in, clone, diff, merge and
+            // stash are still the web build's pages. A route this plugin cannot draw must fall
             // through to the panel rather than render nothing.
             else -> ScmPanel(state)
         }

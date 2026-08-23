@@ -109,42 +109,7 @@ internal fun ScmPanel(state: ScmState, modifier: Modifier = Modifier) {
         }
     }
     state.log?.let { text -> LogSheet(text) { state.log = null } }
-    state.confirm?.let { c -> ConfirmSheet(c) { state.confirm = null } }
-}
-
-/**
- * The yes-or-no before something irreversible.
- *
- * Discard-all and the stash operations throw work away, and a panel that did them on one tap would
- * be a panel you learn to distrust.
- *
- * A real dialog window rather than an overlay inside the panel. Being native, this plugin can put a
- * question on the whole screen instead of squeezing it into a drawer four hundred pixels wide — and
- * it asks with the app's own [AlertDialog], so a prompt from Source Control sits at the same width,
- * in the same shape, with the same buttons as a prompt from anywhere else in JCode.
- */
-@Composable
-private fun ConfirmSheet(confirm: ScmState.Confirm, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(confirm.title) },
-        text = {
-            Text(
-                text = confirm.body,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        },
-        // Cancel is the confirm slot and the destructive action is the dismiss one, because the slots
-        // are positions: rightmost is where a thumb lands, and that is not where "Discard all" goes.
-        confirmButton = { CompactFilledButton(text = "Cancel", onClick = onDismiss) },
-        dismissButton = {
-            CompactDestructiveButton(
-                text = confirm.action,
-                onClick = { onDismiss(); confirm.onConfirm() },
-            )
-        },
-    )
+    state.confirm?.let { c -> ConfirmDialog(c) { state.confirm = null } }
 }
 
 /**
@@ -764,7 +729,7 @@ private fun SplitHalf(
  * text does.
  */
 @Composable
-private fun CompactField(
+internal fun CompactField(
     value: String,
     onValueChange: (String) -> Unit,
     placeholder: String,

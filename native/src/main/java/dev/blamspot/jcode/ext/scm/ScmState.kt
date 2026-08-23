@@ -112,9 +112,6 @@ internal class ScmState(
     var refreshing by mutableStateOf(false)
         private set
 
-    /** What the panel is asking about before it does something irreversible. */
-    data class Confirm(val title: String, val body: String, val action: String, val onConfirm: () -> Unit)
-
     val canCommit: Boolean get() = staged.isNotEmpty() && commitMessage.isNotBlank() && !busy
 
     // --- settings -----------------------------------------------------------------------------
