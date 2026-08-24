@@ -1,24 +1,10 @@
 id: jcode.ext.gitscm
 name: Source Control
-version: 0.9.7
+version: 0.12.0
 type: scm
 publisher: jcode
 authors: [jcode, blamspotdev]
 description: Compact git source control in the left drawer — tree/list changes, multi-repo workspaces, commit, branch, sync, and GitHub sign-in.
-longDescription: >
-  A compact, VS Code-style git source-control sidebar in the left drawer, over the git
-  installed in the Linux runtime. Authored in TypeScript and built for production. Detects
-  the real repository root(s) — in a User Workspace it enumerates every project folder and
-  lets you switch between repositories. View working-tree changes as a flat list or a
-  folder tree; the Staged and Changes sections collapse. Stage / unstage / discard inline,
-  commit staged changes (with an inline identity form the first time), switch and create
-  branches, and fetch / pull / push with automatic upstream setup for new branches. Sign
-  in to GitHub with a Personal Access Token — stored via git's credential helper so
-  push/pull to GitHub HTTPS remotes just work — and set an origin remote from the panel.
-  Decorates the app's file explorer with per-file git status letters and submodule
-  markers, and adds an "Add to .gitignore" entry to the explorer's file/folder menu.
-  Follows JCode's theme tokens so it matches the app. Offers to initialize a repository
-  when the open project isn't one yet.
 api:
   minApiVersion: 1
   capabilities: [exec, workbench, config]
@@ -42,9 +28,12 @@ settings:
     description: Agent CLI the Generate button runs to draft a commit message from the diff. "custom" runs the command below.
   - key: scm.commitMsg.model
     label: Generate commit message · model
-    type: string
+    type: autocomplete
     default: ""
-    description: Model id passed to the agent (blank = the tool's own default).
+    suggestCommand: sh {{extensionDir}}/scripts/list-models.sh {{scm.commitMsg.tool}}
+    description: >-
+      Model id passed to the agent (blank = the tool's own default). The list is read from the
+      selected tool when this field appears; anything else you type is used as-is.
   - key: scm.commitMsg.detail
     label: Generate commit message · detail
     type: enum
@@ -80,7 +69,7 @@ contributes:
 shortDescription: >-
   Compact git source control in the left drawer — tree/list changes, multi-repo workspaces, commit, branch, sync, and
   GitHub sign-in.
-minJCodeVersion: 1.0.0
+minJCodeVersion: 1.6.2
 targetJCodeVersion: 1.0.0
 category: Source Control
 subcategory: Git
@@ -90,5 +79,10 @@ images:
   walkthrough: []
 entry:
   manifest: extension.yaml
-  ui: www/index.html
   libs: []
+  # Drawn in JCode's own process rather than a WebView. A bare dex, not an APK: this plugin owns no
+  # resources — every icon it draws is a vector built in code.
+  native:
+    dex: lib/scm.dex
+    class: dev.blamspot.jcode.ext.scm.ScmExtension
+    abi: 7
