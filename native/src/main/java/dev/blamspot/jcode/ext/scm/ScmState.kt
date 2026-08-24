@@ -313,11 +313,18 @@ internal class ScmState(
      * code — only [NativeExecResult.error] — and a panel that read that as "nothing to report" told
      * the user their changes were stashed when nothing had happened at all.
      */
-    private fun mutate(args: String, timeoutMs: Long = 60_000L, onDone: (suspend (NativeExecResult) -> Unit)? = null) {
+    private fun mutate(
+        args: String,
+        timeoutMs: Long = 60_000L,
+        /** Runs against the live repo before the command does — see [keep]. */
+        before: (suspend (RepoInfo) -> Unit)? = null,
+        onDone: (suspend (NativeExecResult) -> Unit)? = null,
+    ) {
         val active = repo ?: return
         if (busy) return
         scope.launch {
             busy = true
+            before?.invoke(active)
             val r = git.run(active.root, args, timeoutMs)
             busy = false
             onDone?.invoke(r)
@@ -332,12 +339,30 @@ internal class ScmState(
     fun unstageAll() = mutate("reset -q")
 
     /**
+     * Hand the working copies to JCode's Trash before git is asked to destroy them.
+     *
+     * Discard is the one thing in this panel git cannot undo: an uncommitted edit was never in the
+     * object store, and an untracked file was never anywhere near it. The workbench decides whether
+     * the copies are actually kept — the user's Trash setting is theirs, not this extension's — so
+     * this offers them and does not check what became of them.
+     *
+     * Failure is swallowed on purpose: a Trash that cannot take a copy must not stop the discard the
+     * user asked for.
+     */
+    private suspend fun keep(root: String, paths: List<String>) {
+        if (paths.isEmpty()) return
+        val base = root.trimEnd('/')
+        runCatching { host.trash(paths.map { base + "/" + it }) }
+    }
+
+    /**
      * Throw a file's changes away — `clean` for a file git has never seen, `restore` otherwise.
      * Untracked and tracked are different operations, and using the wrong one silently does nothing.
      */
     fun discard(entry: FileEntry) = mutate(
         if (entry.untracked) "clean -fdq -- " + Git.quote(entry.path)
         else "restore -- " + Git.quote(entry.path),
+        before = { active -> keep(active.root, listOf(entry.path)) },
     )
 
     /**
@@ -458,13 +483,20 @@ internal class ScmState(
      */
     fun discardAll() {
         val count = unstaged.size
+        // Read now, not inside the confirmation: by the time it is answered the status may have been
+        // re-read, and what is discarded must be what was counted.
+        val paths = unstaged.map { it.path }
         confirm = Confirm(
             title = "Discard all changes",
             body = "Discard " + count + " change" + (if (count == 1) "" else "s") +
-                " in the working tree, including untracked files? This cannot be undone.",
+                " in the working tree, including untracked files? Copies go to JCode's Trash unless " +
+                "you have turned it off in Settings.",
             action = "Discard all",
         ) {
-            mutate("restore -- . 2>/dev/null; " + Git.prefixFor(repo?.root) + "clean -fdq")
+            mutate(
+                "restore -- . 2>/dev/null; " + Git.prefixFor(repo?.root) + "clean -fdq",
+                before = { active -> keep(active.root, paths) },
+            )
         }
     }
 

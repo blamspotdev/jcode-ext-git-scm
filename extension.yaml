@@ -1,6 +1,6 @@
 id: jcode.ext.gitscm
 name: Source Control
-version: 0.11.0
+version: 0.12.0
 type: scm
 publisher: jcode
 authors: [jcode, blamspotdev]
@@ -69,7 +69,7 @@ contributes:
 shortDescription: >-
   Compact git source control in the left drawer — tree/list changes, multi-repo workspaces, commit, branch, sync, and
   GitHub sign-in.
-minJCodeVersion: 1.0.0
+minJCodeVersion: 1.6.2
 targetJCodeVersion: 1.0.0
 category: Source Control
 subcategory: Git
