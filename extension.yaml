@@ -69,7 +69,7 @@ contributes:
 shortDescription: >-
   Compact git source control in the left drawer — tree/list changes, multi-repo workspaces, commit, branch, sync, and
   GitHub sign-in.
-minJCodeVersion: 1.6.2
+minJCodeVersion: 1.7.3
 targetJCodeVersion: 1.0.0
 category: Source Control
 subcategory: Git

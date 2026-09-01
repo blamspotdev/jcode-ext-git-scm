@@ -18,6 +18,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -41,7 +43,7 @@ internal fun AuthPage(state: AuthState, modifier: Modifier = Modifier) {
     ) {
         item {
             PageHeader(
-                icon = ScmIcons.GitHub,
+                icon = rememberVectorPainter(ScmIcons.GitHub),
                 title = "Source Control",
                 subtitle = "Sign in to GitHub and set your commit identity",
             )

@@ -30,6 +30,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.blamspot.jcode.design.IconSize
+import dev.blamspot.jcode.design.FileTypeIcon
+import dev.blamspot.jcode.design.LocalFileIconSet
 import dev.blamspot.jcode.design.JCodeIcon
 import dev.blamspot.jcode.design.Radius
 import dev.blamspot.jcode.design.Space
@@ -180,16 +182,20 @@ private fun FolderRow(row: TreeRow.Folder<*>, onToggle: () -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(Space.xs),
     ) {
         Icon(
-            imageVector = jcIcon(if (row.collapsed) JCodeIcon.ChevronRight else JCodeIcon.ChevronDown),
+            painter = jcIcon(if (row.collapsed) JCodeIcon.ChevronRight else JCodeIcon.ChevronDown),
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(IconSize.sm),
         )
-        Icon(
-            imageVector = jcIcon(JCodeIcon.Folder),
-            contentDescription = null,
+        // JCode's file icon set names folders too, so a pack the user chose reaches this tree the
+        // same way it reaches the Explorer. With no pack chosen this is the folder glyph it was.
+        FileTypeIcon(
+            name = row.label,
+            isDirectory = true,
+            isExpanded = !row.collapsed,
+            size = IconSize.sm,
+            fallback = JCodeIcon.Folder,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(IconSize.sm),
         )
         Text(
             text = row.label,
@@ -225,12 +231,20 @@ private fun FileSection(state: CommitState, file: CommitFile, depth: Int) {
         horizontalArrangement = Arrangement.spacedBy(Space.sm),
     ) {
         Icon(
-            imageVector = jcIcon(if (open) JCodeIcon.ChevronDown else JCodeIcon.ChevronRight),
+            painter = jcIcon(if (open) JCodeIcon.ChevronDown else JCodeIcon.ChevronRight),
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(IconSize.sm),
         )
         StatusLetter(file.status)
+        if (LocalFileIconSet.current != null) {
+            FileTypeIcon(
+                name = Git.baseName(file.path),
+                isDirectory = false,
+                size = IconSize.sm,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Text(
             // In a tree the folder rows already carry the path, so the leaf is just its name.
             text = if (state.tree) Git.baseName(file.path) else file.path,

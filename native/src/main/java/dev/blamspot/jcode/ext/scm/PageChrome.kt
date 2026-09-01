@@ -23,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -47,7 +48,7 @@ import dev.blamspot.jcode.design.handCursor
 /** Icon, title, one line of explanation, and whatever action the page leads with. */
 @Composable
 internal fun PageHeader(
-    icon: ImageVector,
+    icon: Painter,
     title: String,
     subtitle: String,
     modifier: Modifier = Modifier,
@@ -60,7 +61,7 @@ internal fun PageHeader(
         horizontalArrangement = Arrangement.spacedBy(Space.md),
     ) {
         Icon(
-            imageVector = icon,
+            painter = icon,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.size(IconSize.xl),
@@ -303,7 +304,7 @@ internal fun ToggleChip(label: String, on: Boolean, onClick: () -> Unit) {
  */
 @Composable
 internal fun IconAction(
-    icon: ImageVector,
+    icon: Painter,
     label: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
@@ -318,7 +319,7 @@ internal fun IconAction(
     ) {
         Box(contentAlignment = Alignment.Center) {
             Icon(
-                imageVector = icon,
+                painter = icon,
                 contentDescription = label,
                 tint = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant
                 else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
