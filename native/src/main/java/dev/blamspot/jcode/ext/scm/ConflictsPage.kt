@@ -17,6 +17,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -44,7 +46,7 @@ internal fun ConflictsPage(state: ConflictsState, modifier: Modifier = Modifier)
     ) {
         item {
             PageHeader(
-                icon = ScmIcons.Tree,
+                icon = rememberVectorPainter(ScmIcons.Tree),
                 title = "Conflicts",
                 subtitle = subtitleFor(state),
             ) {
@@ -92,7 +94,7 @@ private fun Settled(state: ConflictsState) {
             horizontalArrangement = Arrangement.spacedBy(Space.sm),
         ) {
             Icon(
-                imageVector = jcIcon(JCodeIcon.Save),
+                painter = jcIcon(JCodeIcon.Save),
                 contentDescription = null,
                 tint = JCodeTheme.semanticColors.success,
                 modifier = Modifier.size(IconSize.md),

@@ -46,6 +46,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -75,6 +77,8 @@ import dev.blamspot.jcode.design.CompactFilledButton
 import dev.blamspot.jcode.design.CompactOutlinedButton
 import dev.blamspot.jcode.design.ControlSize
 import dev.blamspot.jcode.design.IconSize
+import dev.blamspot.jcode.design.FileTypeIcon
+import dev.blamspot.jcode.design.LocalFileIconSet
 import dev.blamspot.jcode.design.JCodeIcon
 import dev.blamspot.jcode.design.JCodeTheme
 import dev.blamspot.jcode.design.Radius
@@ -210,10 +214,10 @@ private fun Toolbar(state: ScmState) {
             BranchMenu(state) { branchMenu = false }
         }
         Box(modifier = Modifier.weight(1f))
-        HeaderIcon(ScmIcons.Pull, "Pull", badge = state.behind) { state.pull() }
-        HeaderIcon(ScmIcons.Push, "Push", badge = state.ahead) { state.push() }
+        HeaderIcon(rememberVectorPainter(ScmIcons.Pull), "Pull", badge = state.behind) { state.pull() }
+        HeaderIcon(rememberVectorPainter(ScmIcons.Push), "Push", badge = state.ahead) { state.push() }
         HeaderIcon(
-            if (state.viewMode == ViewMode.Tree) ScmIcons.List else ScmIcons.Tree,
+            rememberVectorPainter(if (state.viewMode == ViewMode.Tree) ScmIcons.List else ScmIcons.Tree),
             if (state.viewMode == ViewMode.Tree) "Show as list" else "Show as tree",
         ) { state.toggleViewMode() }
         // Sign-in and the history page behind one button: a drawer this narrow cannot hold five tap
@@ -225,8 +229,8 @@ private fun Toolbar(state: ScmState) {
             alignEnd = true,
             anchor = { HeaderIcon(jcIcon(JCodeIcon.MoreVert), "More") { overflow = true } },
         ) {
-            PopoverItem("Branches & history…", ScmIcons.Branch) { overflow = false; state.openManage() }
-            PopoverItem("GitHub sign-in…", ScmIcons.GitHub) { overflow = false; state.openGitHub() }
+            PopoverItem("Branches & history…", rememberVectorPainter(ScmIcons.Branch)) { overflow = false; state.openManage() }
+            PopoverItem("GitHub sign-in…", rememberVectorPainter(ScmIcons.GitHub)) { overflow = false; state.openGitHub() }
         }
     }
 }
@@ -268,7 +272,7 @@ private fun RepoChip(state: ScmState) {
                 modifier = Modifier.widthIn(max = 140.dp),
             )
             Icon(
-                imageVector = jcIcon(JCodeIcon.ChevronDown),
+                painter = jcIcon(JCodeIcon.ChevronDown),
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(IconSize.xs),
@@ -313,14 +317,14 @@ private fun ColumnScope.BranchMenu(state: ScmState, onDismiss: () -> Unit) {
         return
     }
     PopoverItem("New branch…", jcIcon(JCodeIcon.Add)) { creating = true }
-    PopoverItem("Branches & history…", ScmIcons.Branch) { onDismiss(); state.openManage() }
+    PopoverItem("Branches & history…", rememberVectorPainter(ScmIcons.Branch)) { onDismiss(); state.openManage() }
     if (state.branches.isNotEmpty()) {
         PopoverDivider()
         PopoverLabel("Switch to")
         state.branches.forEach { name ->
             PopoverItem(
                 label = name,
-                icon = if (name == state.branch) ScmIcons.Branch else null,
+                icon = if (name == state.branch) rememberVectorPainter(ScmIcons.Branch) else null,
                 selected = name == state.branch,
             ) { if (name != state.branch) state.switchBranch(name); onDismiss() }
         }
@@ -328,11 +332,11 @@ private fun ColumnScope.BranchMenu(state: ScmState, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun HeaderIcon(icon: ImageVector, label: String, badge: Int = 0, onClick: () -> Unit) {
+private fun HeaderIcon(icon: Painter, label: String, badge: Int = 0, onClick: () -> Unit) {
     Box {
         IconButton(onClick = onClick, modifier = Modifier.size(ControlSize.iconButtonSm).handCursor()) {
             Icon(
-                imageVector = icon,
+                painter = icon,
                 contentDescription = if (badge > 0) "$label ($badge)" else label,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(IconSize.sm),
@@ -489,16 +493,20 @@ private fun FolderRow(state: ScmState, row: TreeRow.Folder<*>) {
         horizontalArrangement = Arrangement.spacedBy(Space.xxs),
     ) {
         Icon(
-            imageVector = jcIcon(if (row.collapsed) JCodeIcon.ChevronRight else JCodeIcon.ChevronDown),
+            painter = jcIcon(if (row.collapsed) JCodeIcon.ChevronRight else JCodeIcon.ChevronDown),
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(IconSize.xs),
         )
-        Icon(
-            imageVector = jcIcon(JCodeIcon.Folder),
-            contentDescription = null,
+        // JCode's file icon set names folders too, so a pack the user chose reaches this tree the
+        // same way it reaches the Explorer. With no pack chosen this is the folder glyph it was.
+        FileTypeIcon(
+            name = row.label,
+            isDirectory = true,
+            isExpanded = !row.collapsed,
+            size = IconSize.xs,
+            fallback = JCodeIcon.Folder,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(IconSize.xs),
         )
         Text(
             text = row.label,
@@ -535,8 +543,8 @@ private fun StashRow(state: ScmState, entry: StashEntry) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        RowAction(ScmIcons.Pull, "Apply") { state.stashApply(entry) }
-        RowAction(ScmIcons.Push, "Pop") { state.stashPop(entry) }
+        RowAction(rememberVectorPainter(ScmIcons.Pull), "Apply") { state.stashApply(entry) }
+        RowAction(rememberVectorPainter(ScmIcons.Push), "Pop") { state.stashPop(entry) }
         RowAction(jcIcon(JCodeIcon.Delete), "Drop", MaterialTheme.colorScheme.error) { state.stashDrop(entry) }
     }
 }
@@ -580,7 +588,7 @@ private fun CommitBox(state: ScmState) {
                             )
                         }
                     } else {
-                        RowAction(ScmIcons.Sparkle, "Generate a commit message") {
+                        RowAction(rememberVectorPainter(ScmIcons.Sparkle), "Generate a commit message") {
                             state.generateCommitMessage()
                         }
                     }
@@ -605,10 +613,10 @@ private fun CommitBox(state: ScmState) {
             PopoverItem("Commit (Amend)", jcIcon(JCodeIcon.Undo), enabled = !state.busy) {
                 menu = false; state.commitVariant(CommitVariant.Amend)
             }
-            PopoverItem("Commit & Push", ScmIcons.Push, enabled = state.canCommit) {
+            PopoverItem("Commit & Push", rememberVectorPainter(ScmIcons.Push), enabled = state.canCommit) {
                 menu = false; state.commitVariant(CommitVariant.Push)
             }
-            PopoverItem("Commit & Sync", ScmIcons.Fetch, enabled = state.canCommit) {
+            PopoverItem("Commit & Sync", rememberVectorPainter(ScmIcons.Fetch), enabled = state.canCommit) {
                 menu = false; state.commitVariant(CommitVariant.Sync)
             }
         }
@@ -688,7 +696,7 @@ private fun SplitButton(
                     modifier = Modifier.width(SplitCaretWidth).fillMaxHeight(),
                 ) {
                     Icon(
-                        imageVector = jcIcon(JCodeIcon.ChevronDown),
+                        painter = jcIcon(JCodeIcon.ChevronDown),
                         contentDescription = "More commit actions",
                         modifier = Modifier.size(IconSize.sm),
                     )
@@ -892,7 +900,7 @@ private fun SectionHeader(
         horizontalArrangement = Arrangement.spacedBy(Space.xs),
     ) {
         Icon(
-            imageVector = jcIcon(if (collapsed) JCodeIcon.ChevronRight else JCodeIcon.ChevronDown),
+            painter = jcIcon(if (collapsed) JCodeIcon.ChevronRight else JCodeIcon.ChevronDown),
             contentDescription = if (collapsed) "Expand" else "Collapse",
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(IconSize.xs),
@@ -1041,7 +1049,7 @@ private val PopoverMaxHeight = 320.dp
 @Composable
 internal fun PopoverItem(
     label: String,
-    icon: ImageVector? = null,
+    icon: Painter? = null,
     selected: Boolean = false,
     enabled: Boolean = true,
     onClick: () -> Unit,
@@ -1065,7 +1073,7 @@ internal fun PopoverItem(
         Box(modifier = Modifier.size(IconSize.xs), contentAlignment = Alignment.Center) {
             icon?.let {
                 Icon(
-                    imageVector = it,
+                    painter = it,
                     contentDescription = null,
                     tint = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant else tint,
                     modifier = Modifier.size(IconSize.xs),
@@ -1147,6 +1155,14 @@ private fun FileRow(state: ScmState, entry: FileEntry, section: Section, depth: 
         horizontalArrangement = Arrangement.spacedBy(Space.s),
     ) {
         StatusBadge(entry.code, tint)
+        if (LocalFileIconSet.current != null) {
+            FileTypeIcon(
+                name = entry.display.substringAfterLast('/'),
+                isDirectory = false,
+                size = IconSize.xs,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = entry.display.substringAfterLast('/'),
@@ -1204,14 +1220,14 @@ private fun StatusBadge(code: String, tint: Color) {
 
 @Composable
 private fun RowAction(
-    icon: ImageVector,
+    icon: Painter,
     label: String,
     tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     onClick: () -> Unit,
 ) {
     IconButton(onClick = onClick, modifier = Modifier.size(ControlSize.iconButtonSm).handCursor()) {
         Icon(
-            imageVector = icon,
+            painter = icon,
             contentDescription = label,
             tint = tint,
             modifier = Modifier.size(IconSize.xs),

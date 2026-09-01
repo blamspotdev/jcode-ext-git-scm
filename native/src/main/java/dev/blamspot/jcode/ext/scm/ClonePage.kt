@@ -18,6 +18,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
@@ -61,7 +63,7 @@ private fun CloneForm(state: CloneState, modifier: Modifier) {
     ) {
         item {
             PageHeader(
-                icon = ScmIcons.GitHub,
+                icon = rememberVectorPainter(ScmIcons.GitHub),
                 title = "Clone a repository",
                 subtitle = "Clone a Git repository into a new project",
             )
@@ -186,7 +188,7 @@ private fun RemoteList(state: CloneState, modifier: Modifier) {
     ) {
         item {
             PageHeader(
-                icon = ScmIcons.GitHub,
+                icon = rememberVectorPainter(ScmIcons.GitHub),
                 title = "Remote repositories",
                 subtitle = "Clone one of your GitHub repositories",
             )

@@ -412,7 +412,7 @@ private fun ActionChip(
             // reads as a stray character rather than as the control's own affordance.
             if (caret) {
                 Icon(
-                    imageVector = jcIcon(JCodeIcon.ChevronDown),
+                    painter = jcIcon(JCodeIcon.ChevronDown),
                     contentDescription = null,
                     modifier = Modifier.size(IconSize.xs),
                 )

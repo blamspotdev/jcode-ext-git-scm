@@ -27,6 +27,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -65,13 +67,13 @@ internal fun ManagePage(state: ManageState, modifier: Modifier = Modifier) {
         ) {
             item {
                 PageHeader(
-                    icon = ScmIcons.Branch,
+                    icon = rememberVectorPainter(ScmIcons.Branch),
                     title = "Source Control",
                     subtitle = "Manage branches and view history",
                 ) {
                     if (state.repo != null) {
                         IconAction(
-                            icon = ScmIcons.Fetch,
+                            icon = rememberVectorPainter(ScmIcons.Fetch),
                             label = "Fetch",
                             enabled = !state.busy,
                         ) { state.fetch() }
@@ -157,26 +159,26 @@ private fun LocalBranchRow(state: ManageState, branch: LocalBranch) {
         // Ordered by consequence: switching to it, then bringing it up to date, then sending it,
         // then renaming, and deleting last where a mis-tap is least likely to land.
         BranchMenu(state) { dismiss ->
-            PopoverItem("Show $RECENT_COMMITS recent commits", ScmIcons.List, enabled = !state.busy) {
+            PopoverItem("Show $RECENT_COMMITS recent commits", rememberVectorPainter(ScmIcons.List), enabled = !state.busy) {
                 dismiss(); state.showRecent(branch.name)
             }
             PopoverDivider()
             if (!branch.current) {
-                PopoverItem("Checkout", ScmIcons.Branch, enabled = !state.busy) {
+                PopoverItem("Checkout", rememberVectorPainter(ScmIcons.Branch), enabled = !state.busy) {
                     dismiss(); state.checkout(branch.name)
                 }
-                PopoverItem("Merge to current branch", ScmIcons.Tree, enabled = !state.busy) {
+                PopoverItem("Merge to current branch", rememberVectorPainter(ScmIcons.Tree), enabled = !state.busy) {
                     dismiss(); state.promptMerge(branch.name)
                 }
             }
             // Nothing to pull from without an upstream, so it is left out rather than offered and
             // then failing. The current branch always has somewhere to pull from: its own tracking.
             if (branch.current || branch.upstream.isNotEmpty()) {
-                PopoverItem("Pull", ScmIcons.Pull, enabled = !state.busy) {
+                PopoverItem("Pull", rememberVectorPainter(ScmIcons.Pull), enabled = !state.busy) {
                     dismiss(); state.pull(branch)
                 }
             }
-            PopoverItem("Push", ScmIcons.Push, enabled = !state.busy) {
+            PopoverItem("Push", rememberVectorPainter(ScmIcons.Push), enabled = !state.busy) {
                 dismiss(); state.push(branch)
             }
             PopoverDivider()
@@ -210,14 +212,14 @@ private fun RemoteBranchRow(state: ManageState, branch: RemoteBranch) {
         outgoing = branch.outgoing,
     ) {
         BranchMenu(state) { dismiss ->
-            PopoverItem("Show $RECENT_COMMITS recent commits", ScmIcons.List, enabled = !state.busy) {
+            PopoverItem("Show $RECENT_COMMITS recent commits", rememberVectorPainter(ScmIcons.List), enabled = !state.busy) {
                 dismiss(); state.showRecent(name)
             }
             PopoverDivider()
-            PopoverItem("Checkout", ScmIcons.Branch, enabled = !state.busy) {
+            PopoverItem("Checkout", rememberVectorPainter(ScmIcons.Branch), enabled = !state.busy) {
                 dismiss(); state.checkout(short)
             }
-            PopoverItem("Merge to current branch", ScmIcons.Tree, enabled = !state.busy) {
+            PopoverItem("Merge to current branch", rememberVectorPainter(ScmIcons.Tree), enabled = !state.busy) {
                 dismiss(); state.promptMerge(name)
             }
         }
@@ -290,8 +292,8 @@ private fun BranchRow(
                 )
             }
         }
-        Drift(ScmIcons.Pull, incoming)
-        Drift(ScmIcons.Push, outgoing)
+        Drift(rememberVectorPainter(ScmIcons.Pull), incoming)
+        Drift(rememberVectorPainter(ScmIcons.Push), outgoing)
         Box(modifier = Modifier.weight(1f))
         Row(horizontalArrangement = Arrangement.spacedBy(Space.xs)) { actions() }
     }
@@ -442,14 +444,14 @@ private fun CommitRow(commit: Commit, onOpen: () -> Unit) {
  * is a list you have to read to learn nothing.
  */
 @Composable
-private fun Drift(icon: androidx.compose.ui.graphics.vector.ImageVector, count: Int) {
+private fun Drift(icon: Painter, count: Int) {
     if (count <= 0) return
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Space.xxs),
     ) {
         Icon(
-            imageVector = icon,
+            painter = icon,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(IconSize.xs),
