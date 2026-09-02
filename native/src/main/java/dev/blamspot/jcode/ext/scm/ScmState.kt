@@ -381,6 +381,88 @@ internal class ScmState(
         if (first == whole) host.snackbar(first) else host.snackbar(first, "Show detail") { log = whole }
     }
 
+    /**
+     * Pull, then push — the round trip behind one tap.
+     *
+     * Two commands rather than [mutate]'s one, and the push only runs if the pull actually landed:
+     * `--ff-only` is the pull this panel uses everywhere, so a divergence stops here with git's own
+     * explanation instead of pushing on top of a branch that was never reconciled.
+     */
+    fun sync() {
+        val active = repo ?: return
+        if (busy) return
+        scope.launch {
+            busy = true
+            val pulled = git.run(active.root, "pull --ff-only", 180_000L)
+            val pushed = if (pulled.ok) git.run(active.root, "push", 180_000L) else null
+            busy = false
+            when {
+                !pulled.ok -> log = pulled.failure
+                pushed?.ok == false -> log = pushed.failure
+                else -> succeeded(listOfNotNull(pulled.output, pushed?.output).joinToString("\n"), "Synced.")
+            }
+            refreshStatus()
+        }
+    }
+
+    /**
+     * Fetch every remote, drop the remote-tracking refs that are gone, and offer to delete the local
+     * branches left pointing at nothing.
+     *
+     * `--prune` only removes the remote-tracking refs under `refs/remotes`; the local branch that
+     * tracked a deleted remote branch stays, which is how a repo ends up with thirty merged feature
+     * branches. Those are found by
+     * asking git which upstreams it considers `gone` — so a branch that never had an upstream is
+     * never a candidate, because local-only work is not something to clean up behind someone's back.
+     *
+     * Deleting them is the one destructive thing this button can do, so it never happens on the tap:
+     * the branches are named in a confirmation first. The delete is `-D` rather than `-d` on purpose
+     * — a squash-merged branch is not "merged" as far as git's reachability test is concerned, and a
+     * prune that skipped exactly the branches people actually finish would be a prune in name only.
+     */
+    fun fetchAndPruneBranches() {
+        val active = repo ?: return
+        if (busy) return
+        scope.launch {
+            busy = true
+            refreshing = true
+            val fetched = git.run(active.root, "fetch --all --prune", 180_000L)
+            val listed = if (fetched.ok) {
+                git.run(active.root, "for-each-ref --format=" + Git.quote("%(refname:short) %(upstream:track)") + " refs/heads", 30_000L)
+            } else null
+            busy = false
+            refreshing = false
+            refreshStatus()
+            if (!fetched.ok) {
+                log = fetched.failure
+                return@launch
+            }
+            refreshStashes()
+            val gone = listed?.stdout.orEmpty().lineSequence()
+                .map { it.trim() }
+                .filter { it.endsWith("[gone]") }
+                .map { it.removeSuffix("[gone]").trim() }
+                .filter { it.isNotEmpty() && it != branch }
+                .toList()
+            if (gone.isEmpty()) {
+                succeeded(fetched.output, "Fetched. Every local branch still has its remote.")
+                return@launch
+            }
+            confirm = Confirm(
+                title = if (gone.size == 1) "Delete 1 local branch?" else "Delete ${gone.size} local branches?",
+                body = "These no longer exist on their remote:\n\n" +
+                    gone.joinToString("\n") { "· $it" } +
+                    "\n\nDeleting a branch git has not seen merged cannot be undone from here.",
+                action = "Delete",
+                onConfirm = {
+                    mutate("branch -D " + gone.joinToString(" ") { Git.quote(it) }) { r ->
+                        if (r.ok) succeeded(r.output, "Deleted ${gone.size} branch(es).")
+                    }
+                },
+            )
+        }
+    }
+
     fun pull() = mutate("pull --ff-only", timeoutMs = 180_000L) { r -> if (r.ok) succeeded(r.output) }
     fun push() = mutate("push", timeoutMs = 180_000L) { r -> if (r.ok) succeeded(r.output) }
 
