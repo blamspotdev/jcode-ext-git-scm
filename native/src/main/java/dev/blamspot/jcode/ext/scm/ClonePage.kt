@@ -197,9 +197,9 @@ private fun RemoteList(state: CloneState, modifier: Modifier) {
             state.loadingRepos -> item { Note("Loading your repositories…", spinner = true) }
 
             state.githubUser.isEmpty() -> item {
-                Card(title = "Sign in to GitHub") {
-                    Muted("Sign in to browse and clone your repositories.")
-                    CompactFilledButton(text = "Sign in to GitHub", onClick = { state.openSignIn() })
+                Card(title = "Connect to GitHub") {
+                    Muted("Connect to browse and clone your repositories.")
+                    CompactFilledButton(text = "Connect", onClick = { state.openConnect() })
                 }
             }
 

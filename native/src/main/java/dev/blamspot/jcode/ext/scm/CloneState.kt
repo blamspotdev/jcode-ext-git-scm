@@ -301,7 +301,7 @@ internal class CloneState(
     var reposLog by mutableStateOf<String?>(null)
         private set
 
-    /** Empty when the user has not signed in, which is its own screen rather than an error. */
+    /** Empty when there are no stored credentials, which is its own screen rather than an error. */
     var githubUser by mutableStateOf("")
         private set
 
@@ -387,7 +387,7 @@ internal class CloneState(
         screen = CloneScreen.Remote
     }
 
-    fun openSignIn() = host.openView("github")
+    fun openConnect() = host.openView("github")
 }
 
 private const val SOURCES = "/sources"

@@ -12,6 +12,16 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+/**
+ * The login in git's credential store, or nothing.
+ *
+ * The line the connect page writes is `https://<user>:<token>@github.com`, so stripping the
+ * scheme and everything from the first colon leaves the username — and an empty result means
+ * there are no GitHub credentials at all. The token is never part of the output.
+ */
+private const val GITHUB_LOGIN_COMMAND =
+    """grep -m1 '@github\.com' ~/.git-credentials 2>/dev/null | sed -e 's#^https://##' -e 's#:.*##'"""
+
 /** How the changed-files lists are laid out. */
 internal enum class ViewMode { List, Tree }
 
@@ -54,6 +64,30 @@ internal class ScmState(
         private set
     var booting by mutableStateOf(true)
         private set
+
+    /**
+     * The GitHub login the stored credentials belong to: null until the check has run, empty when
+     * there are none.
+     *
+     * Read out of git's credential store rather than out of `github.user`, because the store is what
+     * a push actually consults — a `github.user` left behind by hand would otherwise report a
+     * connection that is not there.
+     */
+    var githubUser by mutableStateOf<String?>(null)
+        private set
+
+    /** Whether this repository's remotes are ones those credentials would serve. */
+    private var remotesWantGitHub by mutableStateOf(true)
+
+    /**
+     * Whether to offer Connect: there are no credentials, and something here would want them.
+     *
+     * A repository that pushes over SSH, or to a host that is not GitHub, is left alone. The panel
+     * has nothing to offer it, and a standing Connect button would be a permanent nag about a
+     * credential it will never use.
+     */
+    val offerConnect: Boolean
+        get() = githubUser?.isEmpty() == true && remotesWantGitHub
 
     /** Set when the repository cannot be read at all; the panel shows this instead of empty lists. */
     var error by mutableStateOf<String?>(null)
@@ -175,6 +209,26 @@ internal class ScmState(
                 injectIgnored(active.root)
                 refreshAll()
             }
+            // After the tree, not before it: this is a badge on the panel, and the files are why
+            // anyone opened it.
+            checkGitHubConnection(repo?.root)
+        }
+    }
+
+    /**
+     * Who git can push to GitHub as, and whether this repository cares.
+     *
+     * One `sed` over the credential store: the line the connect page writes is
+     * `https://<user>:<token>@github.com`, so the login and the fact that any credentials exist at
+     * all come out of the same read, and the token itself never leaves the file.
+     */
+    private suspend fun checkGitHubConnection(root: String?) {
+        githubUser = host.exec(GITHUB_LOGIN_COMMAND, timeoutMs = 20_000L).stdout.trim()
+        remotesWantGitHub = root == null || run {
+            val urls = git.run(root, "remote -v", 20_000L).output
+                .lines()
+                .mapNotNull { line -> line.trim().split(Regex("""\s+""")).getOrNull(1) }
+            urls.isEmpty() || urls.any { it.startsWith("http") && "github.com" in it }
         }
     }
 
@@ -230,6 +284,9 @@ internal class ScmState(
     suspend fun refreshAll() {
         refreshStatus()
         refreshStashes()
+        // Re-read here as well as at boot: connecting happens on a page of its own, and the panel
+        // that sent you there is still composed when you come back.
+        checkGitHubConnection(repo?.root)
     }
 
     /**
