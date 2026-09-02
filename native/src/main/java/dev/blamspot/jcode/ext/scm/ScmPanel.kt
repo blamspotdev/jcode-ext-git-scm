@@ -98,6 +98,7 @@ import dev.blamspot.jcode.design.jcIcon
 internal fun ScmPanel(state: ScmState, modifier: Modifier = Modifier) {
     Column(modifier = modifier.fillMaxSize()) {
         PanelHeader(state)
+        if (state.offerConnect) ConnectRow(state)
         when {
             state.booting -> CenteredNote("Looking for a repository…", spinner = true)
             state.repos.isEmpty() -> CenteredNote(
@@ -138,6 +139,37 @@ private fun PanelHeader(state: ScmState) {
     ) {
         if (state.repos.size > 1) RepoChip(state)
         if (state.repo != null) Toolbar(state) else TitleRow(state)
+    }
+    HorizontalDivider(thickness = StrokeWidth.hairline, color = MaterialTheme.colorScheme.outlineVariant)
+}
+
+/**
+ * Shown only while there are no stored GitHub credentials and something here would want them.
+ *
+ * Push and pull over HTTPS ask for a username and token, and when there are none the failure lands
+ * in output the panel does not show. Saying so first is the cheaper half of that conversation. It
+ * is a statement with a button, not a banner: one line, and gone the moment you connect.
+ */
+@Composable
+private fun ConnectRow(state: ScmState) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = Space.ms, vertical = Space.s),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Space.sm),
+    ) {
+        Icon(
+            imageVector = ScmIcons.GitHub,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(IconSize.sm),
+        )
+        Text(
+            text = "Not connected to GitHub",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        CompactFilledButton(text = "Connect", onClick = { state.openGitHub() })
     }
     HorizontalDivider(thickness = StrokeWidth.hairline, color = MaterialTheme.colorScheme.outlineVariant)
 }
@@ -256,7 +288,11 @@ private fun Toolbar(state: ScmState) {
                 rememberVectorPainter(if (state.viewMode == ViewMode.Tree) ScmIcons.List else ScmIcons.Tree),
             ) { overflow = false; state.toggleViewMode() }
             PopoverItem("Branches & history…", rememberVectorPainter(ScmIcons.Branch)) { overflow = false; state.openManage() }
-            PopoverItem("GitHub sign-in…", rememberVectorPainter(ScmIcons.GitHub)) { overflow = false; state.openGitHub() }
+            PopoverItem(
+                label = state.githubUser?.takeIf { it.isNotEmpty() }?.let { "GitHub · $it" }
+                    ?: "Connect to GitHub…",
+                icon = rememberVectorPainter(ScmIcons.GitHub),
+            ) { overflow = false; state.openGitHub() }
         }
     }
 }

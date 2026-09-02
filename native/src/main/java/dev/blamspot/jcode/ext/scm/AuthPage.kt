@@ -29,10 +29,12 @@ import dev.blamspot.jcode.design.Space
 import dev.blamspot.jcode.design.handCursor
 
 /**
- * Sign in to GitHub, and say who your commits are from.
+ * Connect to GitHub, and say who your commits are from.
  *
- * Two things on one page because they are one errand: nobody signs in without also wanting their
- * commits attributed, and git refuses to commit at all until the identity is set.
+ * Two things on one page because they are one errand: nobody connects without also wanting their
+ * commits attributed, and git refuses to commit at all until the identity is set. Connecting
+ * settles both — the account is asked for the name and address, so the identity card shows a result
+ * rather than an empty form.
  */
 @Composable
 internal fun AuthPage(state: AuthState, modifier: Modifier = Modifier) {
@@ -45,20 +47,20 @@ internal fun AuthPage(state: AuthState, modifier: Modifier = Modifier) {
             PageHeader(
                 icon = rememberVectorPainter(ScmIcons.GitHub),
                 title = "Source Control",
-                subtitle = "Sign in to GitHub and set your commit identity",
+                subtitle = "Connect with a username and token; your commit identity follows",
             )
         }
         if (state.loading) {
             item { Note("Reading your git configuration…", spinner = true) }
         } else {
-            item { if (state.user.isEmpty()) SignInCard(state) else SignedInCard(state) }
+            item { if (state.user.isEmpty()) ConnectCard(state) else ConnectedCard(state) }
             item { IdentityCard(state) }
         }
     }
 }
 
 @Composable
-private fun SignedInCard(state: AuthState) {
+private fun ConnectedCard(state: AuthState) {
     Card(title = "GitHub") {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -71,7 +73,7 @@ private fun SignedInCard(state: AuthState) {
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
-                Muted("Signed in · credentials saved for push / pull")
+                Muted("Connected · credentials saved for push and pull")
             }
         }
         Row(
@@ -79,8 +81,8 @@ private fun SignedInCard(state: AuthState) {
             horizontalArrangement = Arrangement.spacedBy(Space.sm),
         ) {
             CompactOutlinedButton(
-                text = "Sign out",
-                onClick = { state.signOut() },
+                text = "Disconnect",
+                onClick = { state.disconnect() },
                 enabled = !state.busy,
             )
             state.authMessage?.let { StatusText(it, state.authFailed) }
@@ -108,8 +110,8 @@ private fun Avatar(user: String) {
 }
 
 @Composable
-private fun SignInCard(state: AuthState) {
-    Card(title = "Sign in to GitHub") {
+private fun ConnectCard(state: AuthState) {
+    Card(title = "Connect to GitHub") {
         Muted(
             "Your username and a Personal Access Token — repo to push and pull, user:email to read " +
                 "the name and address for your commits. Stored via git's credential helper so push " +
@@ -135,8 +137,8 @@ private fun SignInCard(state: AuthState) {
             horizontalArrangement = Arrangement.spacedBy(Space.sm),
         ) {
             CompactFilledButton(
-                text = "Sign in",
-                onClick = { state.signIn() },
+                text = "Connect",
+                onClick = { state.connect() },
                 enabled = !state.busy,
             )
             state.authMessage?.let { StatusText(it, state.authFailed) }
@@ -157,30 +159,74 @@ private fun SignInCard(state: AuthState) {
     }
 }
 
+/**
+ * The author on your commits — shown, not asked for.
+ *
+ * Connecting reads the name and the verified address off the account, so the usual case is a card
+ * with the answer already in it. The fields are still here behind Edit: the lookup can come back
+ * empty on a narrow token or an offline environment, and some people commit under a different name
+ * than the one on their GitHub profile.
+ */
 @Composable
 private fun IdentityCard(state: AuthState) {
     Card(title = "Git identity") {
-        Muted("The author name and email on your commits. Also editable in Settings → Source Control.")
-        FieldLabel("Name")
-        CompactField(
-            value = state.name,
-            onValueChange = { state.name = it },
-            placeholder = "Your name",
-        )
-        FieldLabel("Email")
-        CompactField(
-            value = state.email,
-            onValueChange = { state.email = it },
-            placeholder = "you@example.com",
-            literal = true,
-        )
+        if (state.editingIdentity) {
+            Muted(
+                if (state.user.isEmpty()) "The author name and email on your commits. Also editable in Settings → Source Control."
+                else "Overrides what GitHub reported. Also editable in Settings → Source Control.",
+            )
+            FieldLabel("Name")
+            CompactField(
+                value = state.name,
+                onValueChange = { state.name = it },
+                placeholder = "Your name",
+            )
+            FieldLabel("Email")
+            CompactField(
+                value = state.email,
+                onValueChange = { state.email = it },
+                placeholder = "you@example.com",
+                literal = true,
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Space.sm),
+            ) {
+                CompactFilledButton(
+                    text = "Save",
+                    onClick = { state.saveIdentity() },
+                    enabled = !state.busy,
+                )
+                CompactOutlinedButton(
+                    text = "Cancel",
+                    onClick = { state.cancelEditIdentity() },
+                    enabled = !state.busy,
+                )
+                state.identityMessage?.let { StatusText(it, state.identityFailed) }
+            }
+            return@Card
+        }
+        if (state.name.isEmpty() && state.email.isEmpty()) {
+            Muted("Not set yet. Connect above and GitHub fills this in, or set it by hand.")
+        } else {
+            Muted(
+                if (state.user.isEmpty()) "The author name and email on your commits."
+                else "Taken from your GitHub account when you connected.",
+            )
+            Text(
+                text = state.name.ifEmpty { "No name set" },
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Muted(state.email.ifEmpty { "No email set" })
+        }
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Space.sm),
         ) {
-            CompactFilledButton(
-                text = "Save identity",
-                onClick = { state.saveIdentity() },
+            CompactOutlinedButton(
+                text = "Edit",
+                onClick = { state.editIdentity() },
                 enabled = !state.busy,
             )
             state.identityMessage?.let { StatusText(it, state.identityFailed) }

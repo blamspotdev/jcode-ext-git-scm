@@ -12,8 +12,13 @@ import org.json.JSONObject
 /**
  * GitHub credentials and the git identity, for the page that sets both.
  *
+ * "Connect", not "sign in": there is no session and no OAuth here, only a username and a token
+ * handed to git's credential store. Connecting also settles the identity, which is why the two live
+ * together — the account knows the name and address to put on your commits, so you should not have
+ * to type them.
+ *
  * These are global git settings, not a repository's, so nothing here takes a working directory: the
- * page is reachable with no project open, which is exactly when someone signs in for the first time.
+ * page is reachable with no project open, which is exactly when someone connects for the first time.
  */
 internal class AuthState(
     private val host: NativeHost,
@@ -31,7 +36,7 @@ internal class AuthState(
     var name by mutableStateOf("")
     var email by mutableStateOf("")
 
-    /** The sign-in card's own line of feedback, separate from the identity card's. */
+    /** The connect card's own line of feedback, separate from the identity card's. */
     var authMessage by mutableStateOf<String?>(null)
         private set
     var authFailed by mutableStateOf(false)
@@ -39,6 +44,15 @@ internal class AuthState(
     var identityMessage by mutableStateOf<String?>(null)
         private set
     var identityFailed by mutableStateOf(false)
+        private set
+
+    /**
+     * Whether the identity card is showing its fields.
+     *
+     * Closed by default. Connecting fills the identity in from the account, so the fields are an
+     * override for the person who commits under a different name, not the way in.
+     */
+    var editingIdentity by mutableStateOf(false)
         private set
 
     fun boot() {
@@ -57,7 +71,7 @@ internal class AuthState(
     private suspend fun readGlobal(key: String): String =
         host.exec("git config --global --get $key 2>/dev/null", timeoutMs = 20_000L).stdout.trim()
 
-    fun signIn() {
+    fun connect() {
         val who = username.trim()
         val secret = token.trim()
         if (who.isEmpty() || secret.isEmpty()) {
@@ -78,19 +92,27 @@ internal class AuthState(
                 busy = false
                 authFailed = true
                 authMessage = "Git isn't installed in this environment yet — install it from " +
-                    "Tools → Toolchains (git), then sign in."
+                    "Tools → Toolchains (git), then connect."
                 return@launch
             }
-            authMessage = "Signing in…"
+            authMessage = "Connecting…"
             val identity = resolveIdentity(secret, who)
             val quotedUser = Git.quote(who)
             val command = buildString {
                 append("git config --global credential.helper store; ")
                 append("git config --global github.user $quotedUser; ")
+                // Written outright when GitHub answered, and only into the gaps when it did not:
+                // without an answer the name is the username you typed and the address is GitHub's
+                // stand-in, and a guess has no business overwriting an identity someone chose.
+                append("if [ -n \"\$GH_RESOLVED\" ]; then ")
+                append("git config --global user.name \"\$GH_NAME\"; ")
+                append("git config --global user.email \"\$GH_EMAIL\"; ")
+                append("else ")
                 append("if [ -z \"\$(git config --global --get user.name)\" ]; then ")
                 append("git config --global user.name \"\$GH_NAME\"; fi; ")
                 append("if [ -z \"\$(git config --global --get user.email)\" ]; then ")
                 append("git config --global user.email \"\$GH_EMAIL\"; fi; ")
+                append("fi; ")
                 append("umask 077; touch ~/.git-credentials; ")
                 append("sed -i '/@github\\.com\$/d' ~/.git-credentials 2>/dev/null; ")
                 // Through the environment rather than the command line: a token in an argument is a
@@ -104,6 +126,7 @@ internal class AuthState(
                     "GH_TOKEN" to secret,
                     "GH_NAME" to identity.name,
                     "GH_EMAIL" to identity.email,
+                    "GH_RESOLVED" to if (identity.fromGitHub) "1" else "",
                 ),
             )
             busy = false
@@ -135,8 +158,11 @@ internal class AuthState(
      * from an account with "keep my email private" set is rejected without it.
      *
      * Everything here degrades rather than failing. With no curl, no network, or a token too narrow
-     * to read the address list, sign-in still completes on whatever could be resolved — the point of
-     * the button is to save credentials, and the identity is editable on this very page.
+     * to read the address list, connecting still completes on whatever could be resolved — the point
+     * of the button is to save credentials, and the identity is editable on this very page.
+     *
+     * [Identity.fromGitHub] is what separates an answer from a guess, and it decides whether the
+     * result is written over an existing identity or only into the gaps.
      */
     private suspend fun resolveIdentity(token: String, typedLogin: String): Identity {
         val account = fetch("https://api.github.com/user", token)
@@ -150,6 +176,7 @@ internal class AuthState(
             // A verified primary address first, the profile's public one next, and GitHub's own
             // stand-in last — a private account has no other address that will push.
             email = primaryEmail(token) ?: account?.text("email") ?: noreply,
+            fromGitHub = account != null,
         )
     }
 
@@ -178,7 +205,7 @@ internal class AuthState(
         return r.stdout.takeIf { r.ok && it.isNotBlank() }
     }
 
-    fun signOut() {
+    fun disconnect() {
         if (busy) return
         scope.launch {
             busy = true
@@ -191,6 +218,21 @@ internal class AuthState(
             authFailed = false
             load()
         }
+    }
+
+    /** Open the identity fields. Connecting fills them in, so this is for correcting that. */
+    fun editIdentity() {
+        identityMessage = null
+        identityFailed = false
+        editingIdentity = true
+    }
+
+    /** Close the fields and put back what git actually has, discarding anything typed. */
+    fun cancelEditIdentity() {
+        editingIdentity = false
+        identityMessage = null
+        identityFailed = false
+        scope.launch { load() }
     }
 
     fun saveIdentity() {
@@ -211,6 +253,7 @@ internal class AuthState(
             busy = false
             identityFailed = !r.ok
             identityMessage = if (r.ok) "Saved." else r.failure
+            if (r.ok) editingIdentity = false
         }
     }
 
@@ -218,15 +261,20 @@ internal class AuthState(
      * A token pre-scoped for what this page does with it.
      *
      * `repo` to push and pull; `user:email` so the account's verified address can be read and put on
-     * your commits. Without the second one sign-in still works and falls back to GitHub's noreply
+     * your commits. Without the second one connecting still works and falls back to GitHub's noreply
      * address, which pushes — it is just not the address you would have chosen.
      */
     fun openTokenPage() =
         host.openUrl("https://github.com/settings/tokens/new?scopes=repo,user:email&description=JCode")
 }
 
-/** A git identity, as GitHub reports it. */
-private data class Identity(val name: String, val email: String)
+/**
+ * A git identity, and whether GitHub actually supplied it.
+ *
+ * [fromGitHub] false means the account lookup did not answer and these are the fallbacks — the typed
+ * username and a computed noreply address.
+ */
+private data class Identity(val name: String, val email: String, val fromGitHub: Boolean)
 
 /**
  * A field's text, or null.
