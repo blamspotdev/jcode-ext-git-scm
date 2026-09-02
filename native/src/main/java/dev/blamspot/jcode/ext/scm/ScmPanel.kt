@@ -222,7 +222,26 @@ private fun Toolbar(state: ScmState) {
         // touches the network, so without this the badges can sit at 0 while the remote has moved on.
         // The toggle it replaced is a preference you set once and then live with, which is what the
         // menu below is for. Same five targets in the row either way.
-        HeaderIcon(rememberVectorPainter(ScmIcons.Fetch), "Fetch") { state.fetch() }
+        var fetchMenu by remember { mutableStateOf(false) }
+        PopoverAnchor(
+            expanded = fetchMenu,
+            onDismiss = { fetchMenu = false },
+            alignEnd = true,
+            anchor = {
+                HeaderIcon(
+                    rememberVectorPainter(ScmIcons.Fetch),
+                    "Fetch",
+                    onLongClick = { fetchMenu = true },
+                ) { state.fetch() }
+            },
+        ) {
+            PopoverItem("Sync (pull, then push)", jcIcon(JCodeIcon.Refresh)) { fetchMenu = false; state.sync() }
+            PopoverItem(
+                "Fetch all and prune branches",
+                jcIcon(JCodeIcon.Delete),
+                detail = "Deletes local branches no longer on a remote",
+            ) { fetchMenu = false; state.fetchAndPruneBranches() }
+        }
         // The view mode, sign-in and the history page behind one button: a drawer this narrow cannot
         // hold six tap targets in a row without the branch name losing to them.
         var overflow by remember { mutableStateOf(false) }
@@ -338,16 +357,39 @@ private fun ColumnScope.BranchMenu(state: ScmState, onDismiss: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun HeaderIcon(icon: Painter, label: String, badge: Int = 0, onClick: () -> Unit) {
+private fun HeaderIcon(
+    icon: Painter,
+    label: String,
+    badge: Int = 0,
+    /** A long press opens the button's own menu. Absent for the buttons that have only one thing. */
+    onLongClick: (() -> Unit)? = null,
+    onClick: () -> Unit,
+) {
     Box {
-        IconButton(onClick = onClick, modifier = Modifier.size(ControlSize.iconButtonSm).handCursor()) {
+        val content: @Composable () -> Unit = {
             Icon(
                 painter = icon,
                 contentDescription = if (badge > 0) "$label ($badge)" else label,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(IconSize.sm),
             )
+        }
+        if (onLongClick == null) {
+            IconButton(onClick = onClick, modifier = Modifier.size(ControlSize.iconButtonSm).handCursor()) { content() }
+        } else {
+            // IconButton has no long press, so the shape and the hit area are rebuilt here rather
+            // than nested inside one — a clickable wrapped around an IconButton would swallow the
+            // tap on its way past.
+            Box(
+                modifier = Modifier
+                    .size(ControlSize.iconButtonSm)
+                    .clip(RoundedCornerShape(Radius.pill))
+                    .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                    .handCursor(),
+                contentAlignment = Alignment.Center,
+            ) { content() }
         }
         if (badge > 0) CountBadge(badge, Modifier.align(Alignment.TopEnd))
     }
@@ -1059,6 +1101,8 @@ internal fun PopoverItem(
     icon: Painter? = null,
     selected: Boolean = false,
     enabled: Boolean = true,
+    /** A quieter second line, for an entry whose consequence does not fit in the label. */
+    detail: String? = null,
     onClick: () -> Unit,
 ) {
     val tint = when {
@@ -1087,14 +1131,25 @@ internal fun PopoverItem(
                 )
             }
         }
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = tint,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Column {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = tint,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            detail?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }
 
