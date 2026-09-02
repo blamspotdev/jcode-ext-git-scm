@@ -1,6 +1,6 @@
 id: jcode.ext.gitscm
 name: Source Control
-version: 0.12.6
+version: 0.12.7
 type: scm
 publisher: jcode
 authors: [jcode, blamspotdev]
