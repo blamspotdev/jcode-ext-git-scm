@@ -216,12 +216,15 @@ private fun Toolbar(state: ScmState) {
         Box(modifier = Modifier.weight(1f))
         HeaderIcon(rememberVectorPainter(ScmIcons.Pull), "Pull", badge = state.behind) { state.pull() }
         HeaderIcon(rememberVectorPainter(ScmIcons.Push), "Push", badge = state.ahead) { state.push() }
-        HeaderIcon(
-            rememberVectorPainter(if (state.viewMode == ViewMode.Tree) ScmIcons.List else ScmIcons.Tree),
-            if (state.viewMode == ViewMode.Tree) "Show as list" else "Show as tree",
-        ) { state.toggleViewMode() }
-        // Sign-in and the history page behind one button: a drawer this narrow cannot hold five tap
-        // targets in a row without the branch name losing to them.
+        // Fetch earns the third slot ahead of the tree/list toggle because the two buttons beside it
+        // are only as truthful as the last fetch: ahead/behind are read from the remote-tracking refs
+        // in `git status -b`, and nothing but a fetch moves those. The panel's own refresh never
+        // touches the network, so without this the badges can sit at 0 while the remote has moved on.
+        // The toggle it replaced is a preference you set once and then live with, which is what the
+        // menu below is for. Same five targets in the row either way.
+        HeaderIcon(rememberVectorPainter(ScmIcons.Fetch), "Fetch") { state.fetch() }
+        // The view mode, sign-in and the history page behind one button: a drawer this narrow cannot
+        // hold six tap targets in a row without the branch name losing to them.
         var overflow by remember { mutableStateOf(false) }
         PopoverAnchor(
             expanded = overflow,
@@ -229,6 +232,10 @@ private fun Toolbar(state: ScmState) {
             alignEnd = true,
             anchor = { HeaderIcon(jcIcon(JCodeIcon.MoreVert), "More") { overflow = true } },
         ) {
+            PopoverItem(
+                if (state.viewMode == ViewMode.Tree) "Show as list" else "Show as tree",
+                rememberVectorPainter(if (state.viewMode == ViewMode.Tree) ScmIcons.List else ScmIcons.Tree),
+            ) { overflow = false; state.toggleViewMode() }
             PopoverItem("Branches & history…", rememberVectorPainter(ScmIcons.Branch)) { overflow = false; state.openManage() }
             PopoverItem("GitHub sign-in…", rememberVectorPainter(ScmIcons.GitHub)) { overflow = false; state.openGitHub() }
         }
@@ -385,9 +392,9 @@ private val BadgeFontSize = 9.sp
  * failed for want of a git identity, the two fields and their Save button grew past the bottom edge
  * with nothing to scroll.
  *
- * Pulling the list down fetches. That is where the gesture already points — you reach for it to ask
- * "is this still true?" — and it buys back a tap target from a header row that had five of them
- * competing with the branch name.
+ * Pulling the list down fetches, the same as the header's Fetch button. That is where the gesture
+ * already points — you reach for it to ask "is this still true?" — and it stays because a gesture
+ * costs no room in a header row that is already full.
  */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
