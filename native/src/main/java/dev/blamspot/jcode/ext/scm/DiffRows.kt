@@ -106,7 +106,7 @@ private fun CodeCell(
     Row(
         modifier = modifier
             .background(background)
-            .then(if (tappable) Modifier.clickable { onOpen!!(cell.number) }.handCursor() else Modifier),
+            .then(if (tappable) Modifier.clickable { onOpen(cell.number) }.handCursor() else Modifier),
         verticalAlignment = Alignment.Top,
     ) {
         Text(
